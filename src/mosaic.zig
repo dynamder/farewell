@@ -10,6 +10,7 @@ pub const version = "0.0.1";
 
 pub const types = @import("types.zig");
 pub const source = @import("source.zig");
+pub const blit = @import("blit.zig");
 
 pub const RGB = types.RGB;
 pub const Cell = types.Cell;
@@ -21,6 +22,11 @@ pub const Attr = types.Attr;
 pub const Frame = source.Frame;
 pub const Sampler = source.Sampler;
 pub const sampler = source.sampler;
+
+pub const render = blit.render;
+pub const renderAny = blit.renderAny;
+pub const Options = blit.Options;
+pub const Uv = blit.Uv;
 
 test {
     @import("std").testing.refAllDecls(@This());
