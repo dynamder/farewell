@@ -1,8 +1,4 @@
-//! Sub-cell packing: samples -> Cell, plus the render entry points.
-//!
-//! Every blitter is the same shape — take `nx * ny` samples inside one cell and
-//! pack them into a single glyph with two colours. The density table lives in
-//! `types.Mode`; this file only knows how to pack.
+//! Sub-cell packing: samples to Cell, and the render entry points.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -31,7 +27,6 @@ pub const Options = struct {
     threshold: f32 = 0.5,
 };
 
-// --- glyph tables ---------------------------------------------------------
 
 const QUAD: [16]u21 = .{
     ' ',                                                            0x2598, 0x259D, 0x2580,
@@ -44,7 +39,6 @@ const BAR: [5]u21 = .{ ' ', 0x2582, 0x2584, 0x2586, 0x2588 };
 /// Braille dot order inside a sample row-major 2x4 block: (col, row) -> bit.
 const BRAILLE_BIT: [8]u3 = .{ 0, 3, 1, 4, 2, 5, 6, 7 };
 
-// --- packers --------------------------------------------------------------
 
 pub fn pack(comptime mode: Mode, s: []const RGB, o: Options) Cell {
     return switch (mode) {
@@ -138,7 +132,6 @@ fn packBraille(s: []const RGB, o: Options) Cell {
     };
 }
 
-// --- render ---------------------------------------------------------------
 
 /// Render a source into `g`. `mode` is comptime so the sample count, the packing
 /// and the whole loop body specialise away.
@@ -197,7 +190,6 @@ pub fn renderAny(src: anytype, mode: Mode, g: *Grid, o: Options) void {
     }
 }
 
-// --- tests ----------------------------------------------------------------
 
 const Solid = struct {
     color: RGB,
@@ -228,7 +220,6 @@ test "braille fills and empties" {
 test "quad and sextant pick two colours" {
     const dark = RGB.black;
     const bright = RGB.white;
-    // top-left bright only
     const q = pack(.quad, &.{ bright, dark, dark, dark }, .{});
     try std.testing.expectEqual(@as(u21, 0x2598), q.cp);
     try std.testing.expect(q.fg.eql(bright));

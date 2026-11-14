@@ -1,11 +1,7 @@
-//! M0 demo: a raymarched solid rendered as truecolour half blocks.
-//!
-//! This is the VinZ lesson turned into a library test: the scene never
-//! materialises a frame buffer, the blitter pulls two samples per cell and the
-//! emitter turns them straight into bytes.
+//! Raymarched solid rendered as truecolour half blocks.
 
 const std = @import("std");
-const mosaic = @import("mosaic");
+const farewell = @import("farewell");
 
 const V3 = @Vector(3, f32);
 
@@ -42,7 +38,7 @@ fn normal(p: V3, t: f32) V3 {
 const Scene = struct {
     t: f32,
 
-    pub fn sample(self: *const Scene, u: f32, v: f32) mosaic.RGB {
+    pub fn sample(self: *const Scene, u: f32, v: f32) farewell.RGB {
         const ro = V3{ 0, 0, -4.0 };
         const rd = norm(V3{ (u - 0.5) * 1.45, (0.5 - v) * 1.45, 1.0 });
 
@@ -57,9 +53,8 @@ const Scene = struct {
         }
 
         if (dist >= 12) {
-            // background: cool vertical gradient with a soft horizon glow
             const g = 0.10 + 0.55 * (1.0 - v) * (1.0 - v);
-            return mosaic.RGB{
+            return farewell.RGB{
                 .r = @intFromFloat(g * 90.0),
                 .g = @intFromFloat(g * 120.0),
                 .b = @intFromFloat(g * 190.0),
@@ -74,14 +69,13 @@ const Scene = struct {
         const rim = std.math.clamp(1.0 - @max(dot(n, V3{ 0, 0, -1 }), 0.0), 0.0, 1.0);
         const spec = std.math.pow(f32, @max(dot(n, norm(light + V3{ 0, 0, -1 })), 0.0), 32.0);
 
-        // palette as a scalar function: cold shadow -> warm highlight
         const k = std.math.clamp(lum * lum, 0.0, 1.0);
         const cold = V3{ 0.10, 0.22, 0.55 };
         const warm = V3{ 0.98, 0.86, 0.62 };
         const c = cold * @as(V3, @splat(1.0 - k)) + warm * @as(V3, @splat(k)) +
             @as(V3, @splat(0.35 * rim)) + @as(V3, @splat(0.9 * spec));
 
-        return mosaic.RGB{
+        return farewell.RGB{
             .r = @intFromFloat(std.math.clamp(c[0], 0.0, 1.0) * 255.0),
             .g = @intFromFloat(std.math.clamp(c[1], 0.0, 1.0) * 255.0),
             .b = @intFromFloat(std.math.clamp(c[2], 0.0, 1.0) * 255.0),
@@ -94,7 +88,7 @@ pub fn main() !void {
     const h: u16 = 36;
     const frames: usize = 3;
 
-    var grid = try mosaic.Grid.init(std.heap.page_allocator, w, h);
+    var grid = try farewell.Grid.init(std.heap.page_allocator, w, h);
     defer grid.deinit(std.heap.page_allocator);
 
     const buf = try std.heap.page_allocator.alloc(u8, 1 << 20);
@@ -105,8 +99,8 @@ pub fn main() !void {
     var f: usize = 0;
     while (f < frames) : (f += 1) {
         scene.t = @as(f32, @floatFromInt(f)) * 0.45;
-        mosaic.render(mosaic.sampler(&scene), .half, &grid, .{ .uv = .square });
-        const st = try mosaic.emit(&grid, buf, .{});
+        farewell.render(farewell.sampler(&scene), .half, &grid, .{ .uv = .square });
+        const st = try farewell.emit(&grid, buf, .{});
         std.debug.print("{s}", .{buf[0..st.bytes]});
     }
 }

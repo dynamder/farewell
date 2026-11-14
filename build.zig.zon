@@ -1,7 +1,7 @@
 .{
-    .name = .mosaic,
-    .fingerprint = 0x4ed113d2f8dcb451,
-    .version = "0.0.1",
+    .name = .farewell,
+    .fingerprint = 0x7ce7fdc5881591f6,
+    .version = "0.0.0",
     .minimum_zig_version = "0.17.0",
     .dependencies = .{},
     .paths = .{

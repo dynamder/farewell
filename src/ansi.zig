@@ -1,12 +1,4 @@
-//! Cells -> ANSI bytes.
-//!
-//! Design notes, all measured on real terminals:
-//!   * one SGR per changed colour pair, fg and bg merged into a single sequence
-//!     (`ESC[38;2;..;48;2;..m`) instead of two — VinZ spends 37.5 bytes/cell,
-//!     merging buys back ~20%.
-//!   * rows are separated by CRLF rather than a cursor address: 2 bytes instead
-//!     of 6..8. Safe regardless of ONLCR/autowrap because we always emit CR.
-//!   * `row_skip` compares whole rows: an unchanged row costs 2 bytes.
+//! Cells to ANSI bytes: merged truecolour SGR, CRLF rows, row-level diff.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -153,7 +145,6 @@ const Writer = struct {
     }
 };
 
-// --- tests ----------------------------------------------------------------
 
 var scratch: [1]Cell = undefined;
 
@@ -186,7 +177,6 @@ test "unchanged colour costs no sgr" {
         count += 1;
         i = p + 2;
     }
-    // one SGR + the home sequence
     try std.testing.expectEqual(@as(usize, 2), count);
     try std.testing.expect(std.mem.indexOf(u8, out, "###") != null);
 }
@@ -204,11 +194,9 @@ test "row_skip only sends dirty rows" {
     var buf: [256]u8 = undefined;
     const st = try emit(&a, &buf, .{ .redraw = .row_skip, .prev = &b });
     const out = buf[0..st.bytes];
-    // only the second row is emitted
     try std.testing.expectEqual(@as(usize, 1), st.rows);
     try std.testing.expectEqual(@as(usize, 2), st.cells);
     try std.testing.expect(std.mem.indexOf(u8, out, "X.") != null);
-    // skipped row 0 contributes just its CRLF
     try std.testing.expect(std.mem.startsWith(u8, out, "\x1b[H\r\n"));
 }
 

@@ -2,7 +2,7 @@
 
 const std = @import("std");
 
-/// 24-bit colour. Plain struct on purpose: layout is not a contract yet.
+/// 24-bit colour.
 pub const RGB = extern struct {
     r: u8 = 0,
     g: u8 = 0,

@@ -1,6 +1,4 @@
-//! Pixel sources. Anything that can answer `at(u, v) RGB` is a source, so the
-//! blitter works the same for a decoded image, a video frame, or a raymarcher
-//! that never materialises a frame at all.
+//! Pixel sources: concrete frames and procedural samplers.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -83,7 +81,6 @@ pub fn isSource(comptime T: type) bool {
     };
 }
 
-// --- tests ---------------------------------------------------------------
 
 const TestScene = struct {
     pub fn sample(_: *const TestScene, u: f32, v: f32) RGB {

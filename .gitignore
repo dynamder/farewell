@@ -1,4 +1,4 @@
-.zig-cache/
+research/
+.cache/
 zig-out/
-*.exe
-*.pdb
+.zig-cache/
