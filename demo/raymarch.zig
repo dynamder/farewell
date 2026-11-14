@@ -3,6 +3,29 @@
 const std = @import("std");
 const farewell = @import("farewell");
 
+const builtin = @import("builtin");
+
+const console = if (builtin.os.tag == .windows) struct {
+    extern "kernel32" fn GetConsoleOutputCP() callconv(.winapi) u32;
+    extern "kernel32" fn SetConsoleOutputCP(cp: u32) callconv(.winapi) i32;
+
+    fn utf8() u32 {
+        const previous = GetConsoleOutputCP();
+        _ = SetConsoleOutputCP(65001);
+        return previous;
+    }
+
+    fn restore(cp: u32) void {
+        _ = SetConsoleOutputCP(cp);
+    }
+} else struct {
+    fn utf8() u32 {
+        return 0;
+    }
+
+    fn restore(_: u32) void {}
+};
+
 const V3 = @Vector(3, f32);
 
 fn dot(a: V3, b: V3) f32 {
@@ -84,23 +107,35 @@ const Scene = struct {
 };
 
 pub fn main() !void {
-    const w: u16 = 120;
-    const h: u16 = 36;
+    const saved_codepage = console.utf8();
+    defer console.restore(saved_codepage);
+
+    const alloc = std.heap.page_allocator;
+    const size = farewell.Size{ .cols = 120, .rows = 36 };
     const frames: usize = 3;
 
-    var grid = try farewell.Grid.init(std.heap.page_allocator, w, h);
-    defer grid.deinit(std.heap.page_allocator);
+    var caps = farewell.caps.resolve(.{}, .{});
+    try farewell.caps.applySpec(&caps, "-octant");
 
-    const buf = try std.heap.page_allocator.alloc(u8, 1 << 20);
-    defer std.heap.page_allocator.free(buf);
+    var presenter = try farewell.Presenter.init(alloc, size, caps, .half);
+    defer presenter.deinit();
+    presenter.options = .{ .uv = .square };
 
     var scene = Scene{ .t = 0 };
-
-    var f: usize = 0;
-    while (f < frames) : (f += 1) {
-        scene.t = @as(f32, @floatFromInt(f)) * 0.45;
-        farewell.render(farewell.sampler(&scene), .half, &grid, .{ .uv = .square });
-        const st = try farewell.emit(&grid, buf, .{});
-        std.debug.print("{s}", .{buf[0..st.bytes]});
+    var total: usize = 0;
+    for (0..frames) |i| {
+        scene.t = @as(f32, @floatFromInt(i)) * 0.45;
+        const bytes = try presenter.draw(farewell.sampler(&scene));
+        std.debug.print("{s}", .{bytes});
+        total += bytes.len;
     }
+
+    var description: [512]u8 = undefined;
+    std.debug.print("\r\n{s}frames {d}  {d} bytes/frame  {d:.1} bytes/cell  mode {s}\r\n", .{
+        farewell.caps.describe(caps, &description),
+        frames,
+        total / frames,
+        @as(f32, @floatFromInt(total)) / @as(f32, @floatFromInt(frames * size.cols * size.rows)),
+        presenter.mode.name(),
+    });
 }
