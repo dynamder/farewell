@@ -4,6 +4,7 @@ pub const types = @import("types.zig");
 pub const source = @import("source.zig");
 pub const blit = @import("blit.zig");
 pub const ansi = @import("ansi.zig");
+pub const caps = @import("caps.zig");
 
 pub const RGB = types.RGB;
 pub const Attr = types.Attr;
@@ -27,6 +28,12 @@ pub const EmitOptions = ansi.Options;
 pub const Redraw = ansi.Redraw;
 pub const takeScreen = ansi.enter;
 pub const releaseScreen = ansi.leave;
+
+pub const Caps = caps.Caps;
+pub const Probe = caps.Probe;
+pub const Env = caps.Env;
+pub const resolve = caps.resolve;
+pub const select = caps.select;
 
 test {
     @import("std").testing.refAllDecls(@This());

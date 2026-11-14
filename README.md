@@ -18,6 +18,7 @@ M0 只做与终端能力无关的核心：把这条管线打通，并证明它�
 | `src/source.zig` | `Frame`、`Sampler`、`sampler(&scene)` 绑定器 |
 | `src/blit.zig` | 各档打包器；`render`、`renderAny` |
 | `src/ansi.zig` | SGR 合并、CRLF 换行、`row_skip` 按行 diff |
+| `src/caps.zig` | 终端与字体能力位、来源轨迹、覆盖语法、降级阶梯 |
 
 ## 用法
 
