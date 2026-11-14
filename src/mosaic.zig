@@ -9,6 +9,7 @@
 pub const version = "0.0.1";
 
 pub const types = @import("types.zig");
+pub const source = @import("source.zig");
 
 pub const RGB = types.RGB;
 pub const Cell = types.Cell;
@@ -16,6 +17,10 @@ pub const Grid = types.Grid;
 pub const Mode = types.Mode;
 pub const Dims = types.Dims;
 pub const Attr = types.Attr;
+
+pub const Frame = source.Frame;
+pub const Sampler = source.Sampler;
+pub const sampler = source.sampler;
 
 test {
     @import("std").testing.refAllDecls(@This());
