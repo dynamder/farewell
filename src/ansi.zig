@@ -91,14 +91,14 @@ const Writer = struct {
 
     fn u8dec(w: *Writer, v: u8) Error!void {
         if (v >= 100) {
-            try w.put(&.{ '0' + v / 100 });
-            try w.put(&.{ '0' + (v / 10) % 10 });
-            try w.put(&.{ '0' + v % 10 });
+            try w.put(&.{'0' + v / 100});
+            try w.put(&.{'0' + (v / 10) % 10});
+            try w.put(&.{'0' + v % 10});
         } else if (v >= 10) {
-            try w.put(&.{ '0' + v / 10 });
-            try w.put(&.{ '0' + v % 10 });
+            try w.put(&.{'0' + v / 10});
+            try w.put(&.{'0' + v % 10});
         } else {
-            try w.put(&.{ '0' + v });
+            try w.put(&.{'0' + v});
         }
     }
 
@@ -144,7 +144,6 @@ const Writer = struct {
         try w.put(tmp[0..n]);
     }
 };
-
 
 var scratch: [1]Cell = undefined;
 

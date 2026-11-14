@@ -81,7 +81,6 @@ pub fn isSource(comptime T: type) bool {
     };
 }
 
-
 const TestScene = struct {
     pub fn sample(_: *const TestScene, u: f32, v: f32) RGB {
         return .{
@@ -94,8 +93,8 @@ const TestScene = struct {
 
 test "frame samples corners and clamps" {
     const pix = [_]u8{
-        255, 0,   0,   0, 255, 0,
-        0,   0,   255, 255, 255, 255,
+        255, 0, 0,   0,   255, 0,
+        0,   0, 255, 255, 255, 255,
     };
     var f = Frame.init(2, 2, &pix, .rgb8);
     try std.testing.expect(f.at(0.0, 0.0).eql(.{ .r = 255, .g = 0, .b = 0 }));

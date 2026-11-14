@@ -27,10 +27,10 @@ pub const Options = struct {
     threshold: f32 = 0.5,
 };
 
-
 const QUAD: [16]u21 = .{
-    ' ',                                                            0x2598, 0x259D, 0x2580,
-    0x2596, 0x258C, 0x259E, 0x259B, 0x2597, 0x259A, 0x2590, 0x259C,
+    ' ',    0x2598, 0x259D, 0x2580,
+    0x2596, 0x258C, 0x259E, 0x259B,
+    0x2597, 0x259A, 0x2590, 0x259C,
     0x2584, 0x2599, 0x259F, 0x2588,
 };
 
@@ -38,7 +38,6 @@ const BAR: [5]u21 = .{ ' ', 0x2582, 0x2584, 0x2586, 0x2588 };
 
 /// Braille dot order inside a sample row-major 2x4 block: (col, row) -> bit.
 const BRAILLE_BIT: [8]u3 = .{ 0, 3, 1, 4, 2, 5, 6, 7 };
-
 
 pub fn pack(comptime mode: Mode, s: []const RGB, o: Options) Cell {
     return switch (mode) {
@@ -132,7 +131,6 @@ fn packBraille(s: []const RGB, o: Options) Cell {
     };
 }
 
-
 /// Render a source into `g`. `mode` is comptime so the sample count, the packing
 /// and the whole loop body specialise away.
 pub fn render(src: anytype, comptime mode: Mode, g: *Grid, o: Options) void {
@@ -189,7 +187,6 @@ pub fn renderAny(src: anytype, mode: Mode, g: *Grid, o: Options) void {
         inline else => |m| render(src, m, g, o),
     }
 }
-
 
 const Solid = struct {
     color: RGB,
