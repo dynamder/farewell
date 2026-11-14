@@ -63,3 +63,7 @@ zig build fmt
   分开，带默认值与覆盖
 - `transport.sixel`
 - `pacer`：按字节预算降档
+
+## License
+
+MIT
