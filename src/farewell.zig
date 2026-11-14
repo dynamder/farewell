@@ -5,6 +5,7 @@ pub const source = @import("source.zig");
 pub const blit = @import("blit.zig");
 pub const ansi = @import("ansi.zig");
 pub const caps = @import("caps.zig");
+pub const present = @import("present.zig");
 
 pub const RGB = types.RGB;
 pub const Attr = types.Attr;
@@ -34,6 +35,10 @@ pub const Probe = caps.Probe;
 pub const Env = caps.Env;
 pub const resolve = caps.resolve;
 pub const select = caps.select;
+
+pub const Presenter = present.Presenter;
+pub const Size = present.Size;
+pub const bytesNeeded = present.bytesNeeded;
 
 test {
     @import("std").testing.refAllDecls(@This());

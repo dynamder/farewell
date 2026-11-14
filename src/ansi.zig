@@ -35,6 +35,9 @@ pub const enter = "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[0m\x1b[2J\x1b[H";
 pub const leave = "\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l";
 /// Per-frame prefix.
 pub const home = "\x1b[H";
+/// Frame atomicity, emitted only when the terminal supports it.
+pub const sync_on = "\x1b[?2026h";
+pub const sync_off = "\x1b[?2026l";
 
 pub fn emit(g: *const Grid, buf: []u8, o: Options) Error!Stats {
     var w = Writer{ .buf = buf };
