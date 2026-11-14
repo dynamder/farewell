@@ -121,6 +121,7 @@ pub fn main() !void {
     defer presenter.deinit();
     presenter.options = .{ .uv = .square };
 
+    std.debug.print("{s}", .{farewell.ansi.quiet_on});
     var scene = Scene{ .t = 0 };
     var total: usize = 0;
     for (0..frames) |i| {
@@ -130,8 +131,10 @@ pub fn main() !void {
         total += bytes.len;
     }
 
+    std.debug.print("{s}", .{farewell.ansi.quiet_off});
+
     var description: [512]u8 = undefined;
-    std.debug.print("\r\n{s}frames {d}  {d} bytes/frame  {d:.1} bytes/cell  mode {s}\r\n", .{
+    std.debug.print("{s}frames {d}  {d} bytes/frame  {d:.1} bytes/cell  mode {s}\r\n", .{
         farewell.caps.describe(caps, &description),
         frames,
         total / frames,

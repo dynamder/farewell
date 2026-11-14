@@ -33,6 +33,10 @@ pub const Error = error{NoSpaceLeft};
 pub const enter = "\x1b[?1049h\x1b[?25l\x1b[?7l\x1b[0m\x1b[2J\x1b[H";
 /// Hand the screen back.
 pub const leave = "\x1b[0m\x1b[?7h\x1b[?25h\x1b[?1049l";
+/// Stop autowrap and hide the cursor, without taking over the screen.
+pub const quiet_on = "\x1b[?7l\x1b[?25l\x1b[0m";
+/// Undo `quiet_on`.
+pub const quiet_off = "\x1b[?7h\x1b[?25h\x1b[0m";
 /// Per-frame prefix.
 pub const home = "\x1b[H";
 /// Frame atomicity, emitted only when the terminal supports it.
