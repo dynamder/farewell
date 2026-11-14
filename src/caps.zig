@@ -71,15 +71,25 @@ pub const Caps = struct {
 
 const Pick = struct { value: bool, source: Source };
 
-fn pick(sources: [2]Source, override: ?bool, from_env: ?bool, from_probe: ?bool, fallback: bool) Pick {
+/// The only sources that can be ranked. `default` and `override` are not
+/// ranked: they sit at the ends.
+const Rank = enum { env, probe };
+
+fn sourceOf(r: Rank) Source {
+    return switch (r) {
+        .env => .env,
+        .probe => .probe,
+    };
+}
+
+fn pick(comptime rank: [2]Rank, override: ?bool, from_env: ?bool, from_probe: ?bool, fallback: bool) Pick {
     if (override) |v| return .{ .value = v, .source = .override };
-    for (sources) |s| {
-        const v = switch (s) {
+    inline for (rank) |r| {
+        const v: ?bool = switch (r) {
             .env => from_env,
             .probe => from_probe,
-            else => null,
         };
-        if (v) |b| return .{ .value = b, .source = s };
+        if (v) |b| return .{ .value = b, .source = sourceOf(r) };
     }
     return .{ .value = fallback, .source = .default };
 }
@@ -96,28 +106,30 @@ fn set(
 }
 
 pub fn resolve(env: Env, probe: Probe) Caps {
+    return if (env.multiplexer)
+        rankOrder(.{ .probe, .env }, env, probe)
+    else
+        rankOrder(.{ .env, .probe }, env, probe);
+}
+
+fn rankOrder(comptime rank: [2]Rank, env: Env, probe: Probe) Caps {
     const sig = signals(env);
-    const ord = precedence(env);
     const d = Caps{};
     var caps = d;
 
-    set(Terminal, &caps.origins.terminal, .rgb, &caps.terminal, pick(ord, null, sig.rgb, probe.rgb, d.terminal.rgb));
-    set(Terminal, &caps.origins.terminal, .indexed256, &caps.terminal, pick(ord, null, null, null, d.terminal.indexed256));
-    set(Terminal, &caps.origins.terminal, .sixel, &caps.terminal, pick(ord, null, sig.sixel, probe.sixel, d.terminal.sixel));
-    set(Terminal, &caps.origins.terminal, .kitty_graphics, &caps.terminal, pick(ord, null, sig.kitty_graphics, probe.kitty_graphics, d.terminal.kitty_graphics));
-    set(Terminal, &caps.origins.terminal, .sync_output, &caps.terminal, pick(ord, null, null, probe.sync_output, d.terminal.sync_output));
+    set(Terminal, &caps.origins.terminal, .rgb, &caps.terminal, pick(rank, null, sig.rgb, probe.rgb, d.terminal.rgb));
+    set(Terminal, &caps.origins.terminal, .indexed256, &caps.terminal, pick(rank, null, null, null, d.terminal.indexed256));
+    set(Terminal, &caps.origins.terminal, .sixel, &caps.terminal, pick(rank, null, sig.sixel, probe.sixel, d.terminal.sixel));
+    set(Terminal, &caps.origins.terminal, .kitty_graphics, &caps.terminal, pick(rank, null, sig.kitty_graphics, probe.kitty_graphics, d.terminal.kitty_graphics));
+    set(Terminal, &caps.origins.terminal, .sync_output, &caps.terminal, pick(rank, null, null, probe.sync_output, d.terminal.sync_output));
 
-    set(Font, &caps.origins.font, .utf8, &caps.font, pick(ord, null, sig.utf8, null, d.font.utf8));
-    set(Font, &caps.origins.font, .braille, &caps.font, pick(ord, null, null, null, d.font.braille));
-    set(Font, &caps.origins.font, .quadrant, &caps.font, pick(ord, null, null, null, d.font.quadrant));
-    set(Font, &caps.origins.font, .sextant, &caps.font, pick(ord, null, null, null, d.font.sextant));
-    set(Font, &caps.origins.font, .octant, &caps.font, pick(ord, null, null, null, d.font.octant));
+    set(Font, &caps.origins.font, .utf8, &caps.font, pick(rank, null, sig.utf8, null, d.font.utf8));
+    set(Font, &caps.origins.font, .braille, &caps.font, pick(rank, null, null, null, d.font.braille));
+    set(Font, &caps.origins.font, .quadrant, &caps.font, pick(rank, null, null, null, d.font.quadrant));
+    set(Font, &caps.origins.font, .sextant, &caps.font, pick(rank, null, null, null, d.font.sextant));
+    set(Font, &caps.origins.font, .octant, &caps.font, pick(rank, null, null, null, d.font.octant));
 
     return caps;
-}
-
-fn precedence(env: Env) [2]Source {
-    return if (env.multiplexer) .{ .probe, .env } else .{ .env, .probe };
 }
 
 pub fn signals(env: Env) Signals {
@@ -127,7 +139,7 @@ pub fn signals(env: Env) Signals {
         if (eqlAny(v, &.{ "truecolor", "24bit" })) s.rgb = true;
     }
     if (env.term) |v| {
-        if (std.mem.indexOf(u8, v, "kitty") != null) {
+        if (std.mem.find(u8, v, "kitty") != null) {
             s.kitty_graphics = true;
             s.rgb = true;
         }
@@ -153,9 +165,9 @@ fn eqlAny(haystack: []const u8, needles: []const []const u8) bool {
 }
 
 fn isUtf8Locale(v: []const u8) bool {
-    return std.mem.indexOf(u8, v, "UTF-8") != null or
-        std.mem.indexOf(u8, v, "utf8") != null or
-        std.mem.indexOf(u8, v, "utf-8") != null;
+    return std.mem.find(u8, v, "UTF-8") != null or
+        std.mem.find(u8, v, "utf8") != null or
+        std.mem.find(u8, v, "utf-8") != null;
 }
 
 pub const SpecError = error{ UnknownCapability, MalformedSpec };
@@ -291,7 +303,7 @@ test "describe reports provenance" {
     var buf: [512]u8 = undefined;
     const caps = resolve(.{ .wt_session = "abc" }, .{ .sync_output = true });
     const out = describe(caps, &buf);
-    try std.testing.expect(std.mem.indexOf(u8, out, "sixel on(env)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "sync_output on(probe)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "octant off(default)") != null);
+    try std.testing.expect(std.mem.find(u8, out, "sixel on(env)") != null);
+    try std.testing.expect(std.mem.find(u8, out, "sync_output on(probe)") != null);
+    try std.testing.expect(std.mem.find(u8, out, "octant off(default)") != null);
 }

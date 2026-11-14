@@ -157,7 +157,7 @@ test "emits merged sgr and the glyph" {
     const g = oneCell(.{ .cp = 'A', .fg = .{ .r = 255, .g = 0, .b = 0 }, .bg = .{ .r = 0, .g = 0, .b = 255 } });
     const st = try emit(&g, &buf, .{});
     const out = buf[0..st.bytes];
-    try std.testing.expect(std.mem.indexOf(u8, out, "\x1b[38;2;255;0;0;48;2;0;0;255m") != null);
+    try std.testing.expect(std.mem.find(u8, out, "\x1b[38;2;255;0;0;48;2;0;0;255m") != null);
     try std.testing.expect(std.mem.endsWith(u8, out, "A"));
     try std.testing.expectEqual(@as(usize, 1), st.cells);
 }
@@ -172,12 +172,12 @@ test "unchanged colour costs no sgr" {
     const out = buf[0..st.bytes];
     var count: usize = 0;
     var i: usize = 0;
-    while (std.mem.indexOfPos(u8, out, i, "\x1b[")) |p| {
+    while (std.mem.findPos(u8, out, i, "\x1b[")) |p| {
         count += 1;
         i = p + 2;
     }
     try std.testing.expectEqual(@as(usize, 2), count);
-    try std.testing.expect(std.mem.indexOf(u8, out, "###") != null);
+    try std.testing.expect(std.mem.find(u8, out, "###") != null);
 }
 
 test "row_skip only sends dirty rows" {
@@ -195,7 +195,7 @@ test "row_skip only sends dirty rows" {
     const out = buf[0..st.bytes];
     try std.testing.expectEqual(@as(usize, 1), st.rows);
     try std.testing.expectEqual(@as(usize, 2), st.cells);
-    try std.testing.expect(std.mem.indexOf(u8, out, "X.") != null);
+    try std.testing.expect(std.mem.find(u8, out, "X.") != null);
     try std.testing.expect(std.mem.startsWith(u8, out, "\x1b[H\r\n"));
 }
 
