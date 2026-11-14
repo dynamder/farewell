@@ -11,6 +11,7 @@ pub const version = "0.0.1";
 pub const types = @import("types.zig");
 pub const source = @import("source.zig");
 pub const blit = @import("blit.zig");
+pub const emit_mod = @import("emit.zig");
 
 pub const RGB = types.RGB;
 pub const Cell = types.Cell;
@@ -27,6 +28,11 @@ pub const render = blit.render;
 pub const renderAny = blit.renderAny;
 pub const Options = blit.Options;
 pub const Uv = blit.Uv;
+
+pub const emit = emit_mod.emit;
+pub const EmitOptions = emit_mod.Options;
+pub const emit_enter = emit_mod.enter;
+pub const emit_leave = emit_mod.leave;
 
 test {
     @import("std").testing.refAllDecls(@This());

@@ -134,6 +134,11 @@ pub const Grid = struct {
     pub fn at(self: *Grid, x: u16, y: u16) *Cell {
         return &self.cells[@as(usize, y) * self.w + x];
     }
+
+    /// Read-only access for callers holding a `*const Grid`.
+    pub fn get(self: *const Grid, x: u16, y: u16) Cell {
+        return self.cells[@as(usize, y) * self.w + x];
+    }
 };
 
 test "mode density ladder" {
