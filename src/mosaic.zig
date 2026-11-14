@@ -8,6 +8,15 @@
 
 pub const version = "0.0.1";
 
+pub const types = @import("types.zig");
+
+pub const RGB = types.RGB;
+pub const Cell = types.Cell;
+pub const Grid = types.Grid;
+pub const Mode = types.Mode;
+pub const Dims = types.Dims;
+pub const Attr = types.Attr;
+
 test {
     @import("std").testing.refAllDecls(@This());
 }
