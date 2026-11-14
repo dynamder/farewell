@@ -59,12 +59,12 @@ zig build fmt
 字节/cell 取决于画面：平坦区域只付一个字符（3 字节），渐变更贵。任何固定常数
 （比如「36 字节/cell」）都会给出错误预算。
 
-## 下一步
+## 状态与路线
 
-- `caps`：终端能力（rgb / sixel / kitty / 2026）与字体能力（braille / sextant / octant）
-  分开，带默认值与覆盖
-- `transport.sixel`
-- `pacer`：按字节预算降档
+M0–M2 完成：像素进、ANSI 字节出的链路已经闭合。`caps` 决定用哪档密度，
+`Presenter` 负责一帧的装配与一次写出。
+
+下一步见 [ROADMAP.md](ROADMAP.md)。
 
 ## License
 
