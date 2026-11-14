@@ -1,6 +1,7 @@
 # farewell
 
 终端图形库：像素进，ANSI 字节出。
+用于创作终端艺术。
 
 ```
 Source ──blit──> Grid ──ansi──> bytes ──> tty
@@ -12,7 +13,7 @@ M0 只做与终端能力无关的核心：把这条管线打通，并证明它�
 ## 模块
 
 | 文件 | 内容 |
-|---|---|
+| --- | --- |
 | `src/types.zig` | `RGB` `Cell` `Grid` `Mode`（ascii / bars / half / quad / sextant / braille 的密度表） |
 | `src/source.zig` | `Frame`、`Sampler`、`sampler(&scene)` 绑定器 |
 | `src/blit.zig` | 各档打包器；`render`、`renderAny` |
@@ -48,7 +49,7 @@ zig build fmt
 ## 实测（ReleaseFast，120×36 = 4320 cell）
 
 | 指标 | 值 |
-|---|---|
+| --- | --- |
 | raymarch 48 步 × 2 采样/格 | 4.0 ms/帧 |
 | 字节/帧 | 23,273 |
 | 字节/cell | 5.4 |
