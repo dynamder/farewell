@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const farewell = @import("farewell");
+const Host = @import("host.zig").Host;
 
 const builtin = @import("builtin");
 
@@ -106,39 +107,158 @@ const Scene = struct {
     }
 };
 
-pub fn main() !void {
+const modes = @typeInfo(farewell.Mode).@"enum".field_names.len;
+
+const Options = struct {
+    frames: ?usize = null,
+    fps: u16 = 60,
+    caps: ?[]const u8 = null,
+    mode: farewell.Mode = .half,
+
+    fn parse(args: std.process.Args, arena: std.mem.Allocator) ?Options {
+        const list = args.toSlice(arena) catch return null;
+        var o: Options = .{};
+        for (list[1..]) |arg| {
+            if (std.mem.startsWith(u8, arg, "--frames=")) {
+                o.frames = std.fmt.parseInt(usize, arg["--frames=".len..], 10) catch return null;
+            } else if (std.mem.startsWith(u8, arg, "--fps=")) {
+                o.fps = std.fmt.parseInt(u16, arg["--fps=".len..], 10) catch return null;
+            } else if (std.mem.startsWith(u8, arg, "--caps=")) {
+                o.caps = arg["--caps=".len..];
+            } else if (std.mem.startsWith(u8, arg, "--mode=")) {
+                o.mode = std.meta.stringToEnum(farewell.Mode, arg["--mode=".len..]) orelse return null;
+            } else return null;
+        }
+        return o;
+    }
+};
+
+const Meter = struct {
+    frames: usize = 0,
+    bytes: usize = 0,
+    render_ns: i96 = 0,
+    write_ns: i96 = 0,
+    late: usize = 0,
+};
+
+fn usage() noreturn {
+    std.debug.print("usage: raymarch [--frames=N] [--fps=N] [--caps=SPEC] [--mode=NAME]\n", .{});
+    std.process.exit(2);
+}
+
+fn capsEnv(map: *std.process.Environ.Map) farewell.caps.Env {
+    const term = map.get("TERM");
+    return .{
+        .term = term,
+        .colorterm = map.get("COLORTERM"),
+        .term_program = map.get("TERM_PROGRAM"),
+        .wt_session = map.get("WT_SESSION"),
+        .lang = map.get("LANG"),
+        .multiplexer = map.get("TMUX") != null or
+            (term != null and
+                (std.mem.startsWith(u8, term.?, "screen") or std.mem.startsWith(u8, term.?, "tmux"))),
+    };
+}
+
+fn now(io: std.Io) i96 {
+    return std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
+}
+
+pub fn main(init: std.process.Init) !void {
+    const io = init.io;
+    const gpa = init.gpa;
+
+    const opts = Options.parse(init.minimal.args, init.arena.allocator()) orelse usage();
+
     const saved_codepage = console.utf8();
     defer console.restore(saved_codepage);
 
-    const alloc = std.heap.page_allocator;
-    const size = farewell.Size{ .cols = 120, .rows = 36 };
-    const frames: usize = 3;
+    var host = try Host.open(io, .{ .cols = 80, .rows = 24 });
+    errdefer host.deinit();
 
-    var caps = farewell.caps.resolve(.{}, .{});
-    try farewell.caps.applySpec(&caps, "-octant");
+    var caps = farewell.caps.resolve(capsEnv(init.environ_map), .{});
+    if (opts.caps) |spec| farewell.caps.applySpec(&caps, spec) catch return usage();
 
-    var presenter = try farewell.Presenter.init(alloc, size, caps, .half);
-    defer presenter.deinit();
+    var presenter = try farewell.Presenter.init(gpa, host.refreshSize(), caps, opts.mode);
+    errdefer presenter.deinit();
     presenter.options = .{ .uv = .square };
 
-    std.debug.print("{s}", .{farewell.ansi.quiet_on});
-    var scene = Scene{ .t = 0 };
-    var total: usize = 0;
-    for (0..frames) |i| {
-        scene.t = @as(f32, @floatFromInt(i)) * 0.45;
-        const bytes = try presenter.draw(farewell.sampler(&scene));
-        std.debug.print("{s}", .{bytes});
-        total += bytes.len;
+    const budget_ns: i96 = if (opts.fps == 0) 0 else @divTrunc(@as(i96, std.time.ns_per_s), opts.fps);
+
+    var meter: Meter = .{};
+    var scene: Scene = .{ .t = 0 };
+    var at: usize = @backingInt(opts.mode);
+    var paused = false;
+    var frame_ns: i96 = budget_ns;
+    var last = now(io);
+    const started = last;
+
+    while (opts.frames == null or meter.frames < opts.frames.?) {
+        if (host.readKey()) |k| switch (k) {
+            'q', 0x03, 0x1b => break,
+            ' ' => paused = !paused,
+            '+', '=' => {
+                at = (at + 1) % modes;
+                presenter.want = @fromBackingInt(@intCast(at));
+                presenter.mode = farewell.select(caps, presenter.want);
+            },
+            '-', '_' => {
+                at = (at + modes - 1) % modes;
+                presenter.want = @fromBackingInt(@intCast(at));
+                presenter.mode = farewell.select(caps, presenter.want);
+            },
+            else => {},
+        };
+
+        try presenter.resize(host.refreshSize());
+        if (!paused) scene.t += @as(f32, @floatFromInt(frame_ns)) / @as(f32, std.time.ns_per_s) * 0.7;
+
+        const t0 = now(io);
+        const bytes = try presenter.drawDiff(farewell.sampler(&scene));
+        const t1 = now(io);
+        if (bytes.len > 0) try host.write(bytes);
+        const t2 = now(io);
+
+        meter.frames += 1;
+        meter.bytes += bytes.len;
+        meter.render_ns += t1 - t0;
+        meter.write_ns += t2 - t1;
+
+        const spent = t2 - t0;
+        if (budget_ns > 0) {
+            if (spent < budget_ns) {
+                std.Io.sleep(io, .{ .nanoseconds = budget_ns - spent }, .awake) catch {};
+            } else {
+                meter.late += 1;
+            }
+        }
+
+        const seen = now(io);
+        frame_ns = seen - last;
+        last = seen;
     }
 
-    std.debug.print("{s}", .{farewell.ansi.quiet_off});
+    const size = presenter.size;
+    const mode = presenter.mode.name();
+    presenter.deinit();
+    host.deinit();
+
+    const elapsed: f64 = @floatFromInt(now(io) - started);
+    const frames: f64 = @floatFromInt(@max(meter.frames, 1));
+    const cells: f64 = @as(f64, @floatFromInt(size.cols)) * @as(f64, @floatFromInt(size.rows));
 
     var description: [512]u8 = undefined;
-    std.debug.print("{s}frames {d}  {d} bytes/frame  {d:.1} bytes/cell  mode {s}\r\n", .{
+    std.debug.print("{s}frames {d}  {d:.1} fps  render {d:.2} ms  write {d:.2} ms  {d:.0} bytes/frame  {d:.1} bytes/cell  mode {s}  {d}x{d}  late {d}\n", .{
         farewell.caps.describe(caps, &description),
-        frames,
-        total / frames,
-        @as(f32, @floatFromInt(total)) / @as(f32, @floatFromInt(frames * size.cols * size.rows)),
-        presenter.mode.name(),
+        meter.frames,
+        frames / (elapsed / @as(f64, std.time.ns_per_s)),
+        @as(f64, @floatFromInt(meter.render_ns)) / 1e6 / frames,
+        @as(f64, @floatFromInt(meter.write_ns)) / 1e6 / frames,
+        @as(f64, @floatFromInt(meter.bytes)) / frames,
+        @as(f64, @floatFromInt(meter.bytes)) / frames / cells,
+        mode,
+        size.cols,
+        size.rows,
+        meter.late,
     });
 }
