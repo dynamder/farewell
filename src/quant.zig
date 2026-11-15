@@ -22,6 +22,27 @@ pub fn nearest(p: Palette, c: RGB) u8 {
     };
 }
 
+/// The colour held by slot `idx`.
+pub fn rgb(p: Palette, idx: u8) RGB {
+    return switch (p) {
+        .xterm256 => xtermRgb(idx),
+        .fixed => |table| table[idx],
+    };
+}
+
+/// Snaps every cell colour to the palette. Declares `cell`, so it runs while
+/// cells are produced and costs no extra pass over the grid.
+pub const Fixed = struct {
+    palette: Palette,
+
+    pub fn cell(self: *Fixed, c: types.Cell, _: u16, _: u16) types.Cell {
+        var out = c;
+        out.fg = rgb(self.palette, nearest(self.palette, c.fg));
+        out.bg = rgb(self.palette, nearest(self.palette, c.bg));
+        return out;
+    }
+};
+
 /// The six levels of the xterm colour cube.
 const CUBE = [6]u8{ 0, 95, 135, 175, 215, 255 };
 
@@ -144,6 +165,25 @@ test "every cube and grey slot maps back to itself" {
         try std.testing.expectEqual(idx, nearest(.xterm256, xtermRgb(idx)));
         if (idx == 255) break;
     }
+}
+
+test "snapping a cell keeps its glyph and lands on palette colours" {
+    var f = Fixed{ .palette = .xterm256 };
+    const out = f.cell(.{ .cp = 'x', .fg = .{ .r = 250, .g = 10, .b = 10 }, .bg = .{ .r = 0, .g = 0, .b = 255 } }, 3, 4);
+
+    try std.testing.expectEqual(@as(u21, 'x'), out.cp);
+    try std.testing.expect(out.fg.eql(xtermRgb(196)));
+    try std.testing.expect(out.bg.eql(xtermRgb(21)));
+    try std.testing.expectEqual(@as(u8, 196), nearest(.xterm256, out.fg));
+    try std.testing.expectEqual(@as(u8, 21), nearest(.xterm256, out.bg));
+}
+
+test "snapping twice changes nothing" {
+    var f = Fixed{ .palette = .xterm256 };
+    const once = f.cell(.{ .fg = .{ .r = 17, .g = 200, .b = 44 }, .bg = .{ .r = 250, .g = 250, .b = 3 } }, 0, 0);
+    const twice = f.cell(once, 0, 0);
+    try std.testing.expect(twice.fg.eql(once.fg));
+    try std.testing.expect(twice.bg.eql(once.bg));
 }
 
 test "a caller supplied table picks the closer slot" {
