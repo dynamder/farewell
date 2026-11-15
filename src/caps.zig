@@ -105,6 +105,39 @@ fn set(
     origins.set(field, p.source);
 }
 
+/// Builds a probe from a struct that already carries the same capabilities.
+/// Fields are matched by name and must be `bool` or `?bool`; names the source
+/// does not have stay unknown. Matching nothing is a typo, not an answer, and
+/// fails to compile.
+pub fn probeFrom(foreign: anytype) Probe {
+    const T = @TypeOf(foreign);
+    comptime switch (@typeInfo(T)) {
+        .@"struct" => {},
+        else => @compileError("probeFrom(): give it a struct, not a pointer or a union"),
+    };
+    comptime {
+        var shared = false;
+        for (@typeInfo(Probe).@"struct".field_names) |name| {
+            if (@hasField(T, name)) shared = true;
+        }
+        if (!shared) @compileError("probeFrom(): no field names in common with Probe; assign the fields by hand");
+    }
+
+    var p: Probe = .{};
+    inline for (@typeInfo(Probe).@"struct".field_names) |name| {
+        if (@hasField(T, name)) @field(p, name) = optionalBool(@field(foreign, name));
+    }
+    return p;
+}
+
+fn optionalBool(v: anytype) ?bool {
+    return switch (@typeInfo(@TypeOf(v))) {
+        .bool => v,
+        .optional => v,
+        else => @compileError("probeFrom(): fields must be bool or ?bool"),
+    };
+}
+
 pub fn resolve(env: Env, probe: Probe) Caps {
     return if (env.multiplexer)
         rankOrder(.{ .probe, .env }, env, probe)
@@ -297,6 +330,21 @@ test "spec rejects typos and malformed items" {
     var caps = Caps{};
     try std.testing.expectError(error.UnknownCapability, applySpec(&caps, "+sixle"));
     try std.testing.expectError(error.MalformedSpec, applySpec(&caps, "sixel"));
+}
+
+test "probeFrom carries the names it shares and leaves the rest unknown" {
+    const p = probeFrom(.{ .rgb = true, .sixel = false, .kitty_graphics = @as(?bool, null), .unrelated = 7 });
+    try std.testing.expectEqual(true, p.rgb.?);
+    try std.testing.expectEqual(false, p.sixel.?);
+    try std.testing.expectEqual(@as(?bool, null), p.kitty_graphics);
+    try std.testing.expectEqual(@as(?bool, null), p.sync_output);
+}
+
+test "a filled probe reaches caps with probe provenance" {
+    const caps = resolve(.{ .term_program = "alacritty" }, probeFrom(.{ .sync_output = true, .sixel = true }));
+    try std.testing.expect(caps.terminal.sync_output);
+    try std.testing.expectEqual(Source.probe, caps.terminalSource(.sync_output));
+    try std.testing.expect(caps.terminal.sixel);
 }
 
 test "describe reports provenance" {

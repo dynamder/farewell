@@ -34,7 +34,9 @@ pub const Caps = caps.Caps;
 pub const Probe = caps.Probe;
 pub const Env = caps.Env;
 pub const resolve = caps.resolve;
+pub const probeFrom = caps.probeFrom;
 pub const select = caps.select;
+pub const applySpec = caps.applySpec;
 
 pub const Presenter = present.Presenter;
 pub const Size = present.Size;
