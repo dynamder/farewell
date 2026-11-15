@@ -144,58 +144,74 @@ pub fn isSink(comptime T: type) bool {
     };
 }
 
+/// Grid-to-uv mapping for one render; nothing in here changes per cell.
+const Geometry = struct {
+    cw: f32,
+    ch: f32,
+    pw: f32,
+    ph: f32,
+    side: f32,
+    offx: f32,
+    offy: f32,
+
+    fn init(size: types.Size, o: Options) Geometry {
+        const pw: f32 = @floatFromInt(@as(u32, size.cols) * o.cell_px.w);
+        const ph: f32 = @floatFromInt(@as(u32, size.rows) * o.cell_px.h);
+        const side: f32 = @max(pw, ph);
+        return .{
+            .cw = @floatFromInt(o.cell_px.w),
+            .ch = @floatFromInt(o.cell_px.h),
+            .pw = pw,
+            .ph = ph,
+            .side = side,
+            .offx = (side - pw) * 0.5,
+            .offy = (side - ph) * 0.5,
+        };
+    }
+
+    /// Samples one cell and packs it. `mode` and `uv` are comptime, so the
+    /// sample count, the uv mapping and the packing all fold away.
+    inline fn cell(self: Geometry, src: anytype, comptime mode: Mode, comptime uv: Uv, o: Options, x: usize, y: usize) Cell {
+        const d = comptime mode.density();
+        const nx: usize = d.nx;
+        const ny: usize = d.ny;
+
+        var samples: [8]RGB = @splat(RGB.black);
+        inline for (0..ny) |sy| {
+            inline for (0..nx) |sx| {
+                const px = (@as(f32, @floatFromInt(x)) + (@as(f32, @floatFromInt(sx)) + 0.5) / @as(f32, @floatFromInt(nx))) * self.cw;
+                const py = (@as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(sy)) + 0.5) / @as(f32, @floatFromInt(ny))) * self.ch;
+                samples[sy * nx + sx] = switch (uv) {
+                    .stretch => src.at(px / self.pw, py / self.ph),
+                    .square => src.at((px + self.offx) / self.side, (py + self.offy) / self.side),
+                };
+            }
+        }
+        return pack(mode, samples[0 .. nx * ny], o);
+    }
+};
+
 /// Renders `src` into any sink: a `Grid`, or a foreign cell container that
-/// declares `size() Size` and `put(x, y, Cell)`. `mode` is comptime so the
-/// sample count, the packing and the whole loop body specialise away.
+/// declares `size() Size` and `put(x, y, Cell)`. `mode` is comptime and `uv` is
+/// split into its own instantiation, so the sampling loop carries no branch.
 pub fn render(src: anytype, comptime mode: Mode, sink: anytype, o: Options) void {
     comptime if (!source.isSource(@TypeOf(src)))
         @compileError("render(): source must provide at(u, v) RGB");
     comptime if (!isSink(@TypeOf(sink)))
         @compileError("render(): sink must provide size() Size and put(x, y, Cell)");
 
+    switch (o.uv) {
+        inline else => |uv| renderUv(src, mode, sink, o, uv),
+    }
+}
+
+fn renderUv(src: anytype, comptime mode: Mode, sink: anytype, o: Options, comptime uv: Uv) void {
     const size = sink.size();
-    const w: u32 = size.cols;
-    const h: u32 = size.rows;
+    const geo = Geometry.init(size, o);
 
-    const d = mode.density();
-    const nx: usize = d.nx;
-    const ny: usize = d.ny;
-
-    const pw: f32 = @floatFromInt(w * o.cell_px.w);
-    const ph: f32 = @floatFromInt(h * o.cell_px.h);
-    const side: f32 = @max(pw, ph);
-    const offx: f32 = (side - pw) * 0.5;
-    const offy: f32 = (side - ph) * 0.5;
-    const cw: f32 = @floatFromInt(o.cell_px.w);
-    const ch: f32 = @floatFromInt(o.cell_px.h);
-
-    var y: u32 = 0;
-    while (y < h) : (y += 1) {
-        var x: u32 = 0;
-        while (x < w) : (x += 1) {
-            var samples: [8]RGB = @splat(RGB.black);
-            var sy: usize = 0;
-            while (sy < ny) : (sy += 1) {
-                var sx: usize = 0;
-                while (sx < nx) : (sx += 1) {
-                    const px = (@as(f32, @floatFromInt(x)) + (@as(f32, @floatFromInt(sx)) + 0.5) / @as(f32, @floatFromInt(nx))) * cw;
-                    const py = (@as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(sy)) + 0.5) / @as(f32, @floatFromInt(ny))) * ch;
-                    var u: f32 = undefined;
-                    var v: f32 = undefined;
-                    switch (o.uv) {
-                        .stretch => {
-                            u = px / pw;
-                            v = py / ph;
-                        },
-                        .square => {
-                            u = (px + offx) / side;
-                            v = (py + offy) / side;
-                        },
-                    }
-                    samples[sy * nx + sx] = src.at(u, v);
-                }
-            }
-            sink.put(@intCast(x), @intCast(y), pack(mode, samples[0 .. nx * ny], o));
+    for (0..size.rows) |y| {
+        for (0..size.cols) |x| {
+            sink.put(@intCast(x), @intCast(y), geo.cell(src, mode, uv, o, x, y));
         }
     }
 }
