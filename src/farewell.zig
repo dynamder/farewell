@@ -5,6 +5,7 @@ pub const source = @import("source.zig");
 pub const blit = @import("blit.zig");
 pub const ansi = @import("ansi.zig");
 pub const caps = @import("caps.zig");
+pub const pacer = @import("pacer.zig");
 pub const present = @import("present.zig");
 
 pub const RGB = types.RGB;
@@ -37,6 +38,10 @@ pub const resolve = caps.resolve;
 pub const probeFrom = caps.probeFrom;
 pub const select = caps.select;
 pub const applySpec = caps.applySpec;
+
+pub const Pacer = pacer.Pacer;
+pub const Decision = pacer.Decision;
+pub const Sample = pacer.Sample;
 
 pub const Presenter = present.Presenter;
 pub const Size = present.Size;
