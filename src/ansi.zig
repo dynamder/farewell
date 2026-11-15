@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const types = @import("types.zig");
+const quant = @import("quant.zig");
 
 const RGB = types.RGB;
 const Cell = types.Cell;
@@ -9,10 +10,16 @@ const Grid = types.Grid;
 
 pub const Redraw = enum { full, row_skip };
 
+/// A colour as it reaches the wire: truecolour values, or a palette slot.
+const Ink = union(enum) { rgb: RGB, idx: u8 };
+
 pub const Options = struct {
     redraw: Redraw = .full,
     /// Required for `.row_skip`; ignored for `.full`.
     prev: ?*const Grid = null,
+    /// When set, colours go out as slots in this palette instead of truecolour;
+    /// cells are expected to hold palette colours already.
+    palette: ?quant.Palette = null,
 };
 
 pub const Stats = struct {
@@ -47,8 +54,8 @@ pub fn emit(g: *const Grid, buf: []u8, o: Options) Error!Stats {
     var w = Writer{ .buf = buf };
     try w.put(home);
 
-    var last_fg: ?RGB = null;
-    var last_bg: ?RGB = null;
+    var last_fg: ?Ink = null;
+    var last_bg: ?Ink = null;
     var stats = Stats{};
 
     var y: usize = 0;
@@ -62,7 +69,9 @@ pub fn emit(g: *const Grid, buf: []u8, o: Options) Error!Stats {
             var x: usize = 0;
             while (x < g.w) : (x += 1) {
                 const c = g.get(@intCast(x), @intCast(y));
-                try w.sgr(c.fg, c.bg, &last_fg, &last_bg);
+                const fg: Ink = if (o.palette) |p| .{ .idx = quant.nearest(p, c.fg) } else .{ .rgb = c.fg };
+                const bg: Ink = if (o.palette) |p| .{ .idx = quant.nearest(p, c.bg) } else .{ .rgb = c.bg };
+                try w.sgr(fg, bg, &last_fg, &last_bg);
                 try w.cp(c.cp);
                 stats.cells += 1;
             }
@@ -118,27 +127,32 @@ const Writer = struct {
     }
 
     /// Emit the smallest SGR that gets us to (fg, bg).
-    fn sgr(w: *Writer, fg: RGB, bg: RGB, last_fg: *?RGB, last_bg: *?RGB) Error!void {
-        const fg_changed = last_fg.* == null or !last_fg.*.?.eql(fg);
-        const bg_changed = last_bg.* == null or !last_bg.*.?.eql(bg);
+    fn sgr(w: *Writer, fg: Ink, bg: Ink, last_fg: *?Ink, last_bg: *?Ink) Error!void {
+        const fg_changed = last_fg.* == null or !std.meta.eql(last_fg.*.?, fg);
+        const bg_changed = last_bg.* == null or !std.meta.eql(last_bg.*.?, bg);
         if (!fg_changed and !bg_changed) return;
 
         try w.put("\x1b[");
-        if (fg_changed and bg_changed) {
-            try w.put("38;2;");
-            try w.rgb(fg);
-            try w.put(";48;2;");
-            try w.rgb(bg);
-        } else if (fg_changed) {
-            try w.put("38;2;");
-            try w.rgb(fg);
-        } else {
-            try w.put("48;2;");
-            try w.rgb(bg);
-        }
+        if (fg_changed) try w.colour("38", fg);
+        if (fg_changed and bg_changed) try w.put(";");
+        if (bg_changed) try w.colour("48", bg);
         try w.put("m");
         last_fg.* = fg;
         last_bg.* = bg;
+    }
+
+    fn colour(w: *Writer, prefix: []const u8, v: Ink) Error!void {
+        try w.put(prefix);
+        switch (v) {
+            .rgb => |c| {
+                try w.put(";2;");
+                try w.rgb(c);
+            },
+            .idx => |i| {
+                try w.put(";5;");
+                try w.u8dec(i);
+            },
+        }
     }
 
     /// UTF-8 encode a single codepoint.
@@ -167,6 +181,31 @@ test "emits merged sgr and the glyph" {
     try std.testing.expect(std.mem.find(u8, out, "\x1b[38;2;255;0;0;48;2;0;0;255m") != null);
     try std.testing.expect(std.mem.endsWith(u8, out, "A"));
     try std.testing.expectEqual(@as(usize, 1), st.cells);
+}
+
+test "indexed output writes slots, not truecolour" {
+    var buf: [128]u8 = undefined;
+    var g = try Grid.init(std.testing.allocator, 1, 1);
+    defer g.deinit(std.testing.allocator);
+    g.put(0, 0, .{ .cp = 'A', .fg = quant.rgb(.xterm256, 196), .bg = quant.rgb(.xterm256, 21) });
+
+    const st = try emit(&g, &buf, .{ .palette = .xterm256 });
+    const out = buf[0..st.bytes];
+    try std.testing.expect(std.mem.find(u8, out, "\x1b[38;5;196;48;5;21m") != null);
+    try std.testing.expect(std.mem.find(u8, out, ";2;") == null);
+}
+
+test "colours that share a slot cost no second sgr" {
+    var buf: [256]u8 = undefined;
+    var g = try Grid.init(std.testing.allocator, 2, 1);
+    defer g.deinit(std.testing.allocator);
+    g.put(0, 0, .{ .cp = 'A', .fg = .{ .r = 255, .g = 0, .b = 0 }, .bg = RGB.black });
+    g.put(1, 0, .{ .cp = 'B', .fg = .{ .r = 254, .g = 0, .b = 0 }, .bg = RGB.black });
+
+    const st = try emit(&g, &buf, .{ .palette = .xterm256 });
+    const out = buf[0..st.bytes];
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\x1b[38"));
+    try std.testing.expectEqual(@as(usize, 2), st.cells);
 }
 
 test "unchanged colour costs no sgr" {
