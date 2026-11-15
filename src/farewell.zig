@@ -7,6 +7,7 @@ pub const ansi = @import("ansi.zig");
 pub const caps = @import("caps.zig");
 pub const pacer = @import("pacer.zig");
 pub const post = @import("post.zig");
+pub const quant = @import("quant.zig");
 pub const present = @import("present.zig");
 
 pub const RGB = types.RGB;
