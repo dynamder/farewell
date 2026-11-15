@@ -1,4 +1,4 @@
-//! Raymarched solid rendered as truecolour half blocks.
+//! Raymarched solid rendered into the terminal, with a live status line.
 
 const std = @import("std");
 const farewell = @import("farewell");
@@ -229,7 +229,7 @@ const Options = struct {
     frames: ?usize = null,
     fps: u16 = 60,
     caps: ?[]const u8 = null,
-    mode: farewell.Mode = .half,
+    mode: farewell.Mode = .ink,
     colour: Colour = .auto,
     dither: Dither = .off,
     kind: Kind = .raymarch,
@@ -302,6 +302,25 @@ fn capsEnv(map: *std.process.Environ.Map) farewell.caps.Env {
     };
 }
 
+/// One line at the bottom, redrawn every frame: what the renderer is doing and
+/// what it costs. Written straight to the terminal, not through the grid, so it
+/// costs no cells; only in a real terminal, where a frame is not a byte stream.
+fn writeStatus(host: *Host, rows: u16, cols: u16, text: []const u8) !void {
+    if (cols < 8) return;
+    var buf: [512]u8 = undefined;
+    const line = text[0..@min(text.len, cols - 1)];
+    const out = try std.fmt.bufPrint(&buf, "\x1b[{d};1H\x1b[K{s}", .{ rows, line });
+    try host.write(out);
+}
+
+/// The grid the scene draws into. In a terminal the last row belongs to the
+/// status line; with no terminal there is no line, and the size is the size, so
+/// a captured stream is exactly the grid.
+fn imageSize(size: farewell.Size, screen: bool) farewell.Size {
+    if (!screen) return size;
+    return .{ .cols = size.cols, .rows = if (size.rows > 1) size.rows - 1 else 1 };
+}
+
 fn now(io: std.Io) i96 {
     return std.Io.Clock.Timestamp.now(io, .awake).raw.nanoseconds;
 }
@@ -332,7 +351,7 @@ pub fn main(init: std.process.Init) !void {
     const bayer4 = farewell.dither.Bayer{ .table = .xterm256, .matrix = .x4 };
     const bayer8 = farewell.dither.Bayer{ .table = .xterm256, .matrix = .x8 };
 
-    var presenter = try farewell.Presenter.init(gpa, host.refreshSize(), caps, opts.mode);
+    var presenter = try farewell.Presenter.init(gpa, imageSize(host.refreshSize(), host.screen), caps, opts.mode);
     errdefer presenter.deinit();
     presenter.options = .{ .uv = .square };
 
@@ -388,7 +407,7 @@ pub fn main(init: std.process.Init) !void {
             else => {},
         };
 
-        try presenter.resize(host.refreshSize());
+        try presenter.resize(imageSize(host.refreshSize(), host.screen));
         if (!paused) scene.t += @as(f32, @floatFromInt(frame_ns)) / @as(f32, std.time.ns_per_s) * 0.7;
 
         const t0 = now(io);
@@ -402,6 +421,20 @@ pub fn main(init: std.process.Init) !void {
         };
         const t1 = now(io);
         if (bytes.len > 0) try host.write(bytes);
+
+        if (host.screen) {
+            var line: [256]u8 = undefined;
+            const ms = @as(f64, @floatFromInt(t1 - t0)) / 1e6;
+            const text = std.fmt.bufPrint(&line, " {s}  {d:.1} ms  {d:.0} fps  {d:.1} KB/frame  {s}  [+/-] mode  [space] pause  [q] quit", .{
+                presenter.mode.name(),
+                ms,
+                if (pacing) @as(f64, @floatFromInt(pacer.fps)) else 0,
+                @as(f64, @floatFromInt(bytes.len)) / 1024.0,
+                if (use_palette) "256" else "truecolour",
+            }) catch line[0..0];
+            try writeStatus(&host, host.refreshSize().rows, host.refreshSize().cols, text);
+        }
+
         const t2 = now(io);
 
         meter.frames += 1;
