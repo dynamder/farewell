@@ -20,6 +20,9 @@ pub fn bytesNeeded(size: Size) usize {
 }
 
 pub const Presenter = struct {
+    /// Must be the allocator passed to `init`. Every buffer is released through
+    /// it, and `resize` reallocates through it, so it has to outlive the
+    /// presenter. Setting it to another allocator is silent corruption.
     alloc: std.mem.Allocator,
     size: Size,
     caps: Caps,
