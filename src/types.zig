@@ -109,6 +109,9 @@ pub const Mode = enum {
     }
 };
 
+/// Grid dimensions in cells.
+pub const Size = struct { cols: u16, rows: u16 };
+
 /// A cell buffer.
 pub const Grid = struct {
     w: u16,
@@ -131,8 +134,17 @@ pub const Grid = struct {
         @memset(self.cells, c);
     }
 
+    pub fn size(self: Grid) Size {
+        return .{ .cols = self.w, .rows = self.h };
+    }
+
     pub fn at(self: *Grid, x: u16, y: u16) *Cell {
         return &self.cells[@as(usize, y) * self.w + x];
+    }
+
+    /// Copies `c` into the cell at (x, y).
+    pub fn put(self: *Grid, x: u16, y: u16, c: Cell) void {
+        self.at(x, y).* = c;
     }
 
     /// Read-only access for callers holding a `*const Grid`.

@@ -131,28 +131,48 @@ fn packBraille(s: []const RGB, o: Options) Cell {
     };
 }
 
-/// Render a source into `g`. `mode` is comptime so the sample count, the packing
-/// and the whole loop body specialise away.
-pub fn render(src: anytype, comptime mode: Mode, g: *Grid, o: Options) void {
+/// True when `T` (or the type it points at) can receive cells: it declares
+/// `size() Size` and `put(x, y, Cell)`.
+pub fn isSink(comptime T: type) bool {
+    const U = switch (@typeInfo(T)) {
+        .pointer => |p| p.child,
+        else => T,
+    };
+    return switch (@typeInfo(U)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => @hasDecl(U, "size") and @hasDecl(U, "put"),
+        else => false,
+    };
+}
+
+/// Renders `src` into any sink: a `Grid`, or a foreign cell container that
+/// declares `size() Size` and `put(x, y, Cell)`. `mode` is comptime so the
+/// sample count, the packing and the whole loop body specialise away.
+pub fn render(src: anytype, comptime mode: Mode, sink: anytype, o: Options) void {
     comptime if (!source.isSource(@TypeOf(src)))
         @compileError("render(): source must provide at(u, v) RGB");
+    comptime if (!isSink(@TypeOf(sink)))
+        @compileError("render(): sink must provide size() Size and put(x, y, Cell)");
+
+    const size = sink.size();
+    const w: u32 = size.cols;
+    const h: u32 = size.rows;
 
     const d = mode.density();
     const nx: usize = d.nx;
     const ny: usize = d.ny;
 
-    const pw: f32 = @floatFromInt(@as(u32, g.w) * o.cell_px.w);
-    const ph: f32 = @floatFromInt(@as(u32, g.h) * o.cell_px.h);
+    const pw: f32 = @floatFromInt(w * o.cell_px.w);
+    const ph: f32 = @floatFromInt(h * o.cell_px.h);
     const side: f32 = @max(pw, ph);
     const offx: f32 = (side - pw) * 0.5;
     const offy: f32 = (side - ph) * 0.5;
     const cw: f32 = @floatFromInt(o.cell_px.w);
     const ch: f32 = @floatFromInt(o.cell_px.h);
 
-    var y: usize = 0;
-    while (y < g.h) : (y += 1) {
-        var x: usize = 0;
-        while (x < g.w) : (x += 1) {
+    var y: u32 = 0;
+    while (y < h) : (y += 1) {
+        var x: u32 = 0;
+        while (x < w) : (x += 1) {
             var samples: [8]RGB = @splat(RGB.black);
             var sy: usize = 0;
             while (sy < ny) : (sy += 1) {
@@ -175,16 +195,16 @@ pub fn render(src: anytype, comptime mode: Mode, g: *Grid, o: Options) void {
                     samples[sy * nx + sx] = src.at(u, v);
                 }
             }
-            g.at(@intCast(x), @intCast(y)).* = pack(mode, samples[0 .. nx * ny], o);
+            sink.put(@intCast(x), @intCast(y), pack(mode, samples[0 .. nx * ny], o));
         }
     }
 }
 
 /// Runtime mode dispatch: `inline else` turns each branch back into the comptime
 /// version, so this stays zero-cost while the API can take a mode from caps.
-pub fn renderAny(src: anytype, mode: Mode, g: *Grid, o: Options) void {
+pub fn renderAny(src: anytype, mode: Mode, sink: anytype, o: Options) void {
     switch (mode) {
-        inline else => |m| render(src, m, g, o),
+        inline else => |m| render(src, m, sink, o),
     }
 }
 
@@ -249,4 +269,40 @@ test "renderAny matches render" {
     render(&f, .braille, &a, .{});
     renderAny(&f, .braille, &b, .{});
     for (a.cells, b.cells) |x, y| try std.testing.expectEqual(x.cp, y.cp);
+}
+
+/// A sink that is not a `Grid`, shaped like the adapter a TUI host would write.
+const Plain = struct {
+    w: u16,
+    h: u16,
+    cells: [16]Cell,
+
+    pub fn size(self: Plain) types.Size {
+        return .{ .cols = self.w, .rows = self.h };
+    }
+
+    pub fn put(self: *Plain, x: u16, y: u16, c: Cell) void {
+        self.cells[@as(usize, y) * self.w + x] = c;
+    }
+};
+
+test "a foreign sink receives the same cells as the grid" {
+    const pix = [_]u8{ 255, 0, 0, 0, 255, 0, 0, 0, 255, 9, 9, 9, 30, 60, 90, 120, 150, 180 };
+    const f = source.Frame.init(3, 2, &pix, .rgb8);
+    var g = try Grid.init(std.testing.allocator, 3, 2);
+    defer g.deinit(std.testing.allocator);
+    var p = Plain{ .w = 3, .h = 2, .cells = undefined };
+
+    render(&f, .quad, &g, .{ .uv = .square });
+    render(&f, .quad, &p, .{ .uv = .square });
+
+    for (g.cells, 0..) |c, i| try std.testing.expect(std.meta.eql(c, p.cells[i]));
+}
+
+test "isSink accepts the grid and rejects plain values" {
+    try std.testing.expect(isSink(Grid));
+    try std.testing.expect(isSink(*Grid));
+    try std.testing.expect(isSink(Plain));
+    try std.testing.expect(!isSink(u32));
+    try std.testing.expect(!isSink(*const source.Frame));
 }

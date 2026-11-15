@@ -11,7 +11,7 @@ const Grid = types.Grid;
 const Mode = types.Mode;
 const Caps = caps_mod.Caps;
 
-pub const Size = struct { cols: u16, rows: u16 };
+pub const Size = types.Size;
 
 /// Worst case per cell: merged truecolour SGR plus a four-byte glyph.
 pub fn bytesNeeded(size: Size) usize {
