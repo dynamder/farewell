@@ -52,7 +52,7 @@ defer p.deinit();
 
 while (running) {
     try p.resize(host.refreshSize());            // 尺寸没变时是空操作
-    const bytes = try p.drawDiff(farewell.sampler(&scene));
+    const bytes = try p.drawDiff(farewell.sampler(&scene), .{});
     if (bytes.len > 0) try host.write(bytes);    // 没变化时不用写
 }
 ```
@@ -122,7 +122,7 @@ var pacer = farewell.Pacer.init(.{
 
 // 每帧
 const budget = pacer.budgetNs();
-const bytes = try p.drawDiff(farewell.sampler(&scene));
+const bytes = try p.drawDiff(farewell.sampler(&scene), .{});
 if (bytes.len > 0) try host.write(bytes);
 
 switch (pacer.observe(.{ .render_ns = render, .write_ns = write })) {

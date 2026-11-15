@@ -3,6 +3,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const caps_mod = @import("caps.zig");
+const post_mod = @import("post.zig");
 const blit = @import("blit.zig");
 const ansi = @import("ansi.zig");
 const source = @import("source.zig");
@@ -87,9 +88,12 @@ pub const Presenter = struct {
 
     /// Full redraw; also re-bases the rows `drawDiff` compares against. The
     /// returned slice is valid until the next draw, resize or deinit.
-    pub fn draw(self: *Presenter, src: anytype) ![]const u8 {
+    ///
+    /// `post_effects` is a tuple of effect pointers; see `post.zig`.
+    pub fn draw(self: *Presenter, src: anytype, post_effects: anytype) ![]const u8 {
+        comptime post_mod.check(@TypeOf(post_effects));
         const offset = self.head();
-        blit.renderAny(src, self.mode, &self.grid, self.options);
+        self.renderInto(src, post_effects);
         const stats = try ansi.emit(&self.grid, self.payload(offset), .{});
         std.mem.swap(Grid, &self.grid, &self.prev);
         self.prev_valid = true;
@@ -99,9 +103,12 @@ pub const Presenter = struct {
     /// Row-level diff against the previous frame. An unchanged frame yields an
     /// empty slice, so the caller can skip the write entirely. The returned
     /// slice is valid until the next draw, resize or deinit.
-    pub fn drawDiff(self: *Presenter, src: anytype) ![]const u8 {
+    ///
+    /// `post_effects` is a tuple of effect pointers; see `post.zig`.
+    pub fn drawDiff(self: *Presenter, src: anytype, post_effects: anytype) ![]const u8 {
+        comptime post_mod.check(@TypeOf(post_effects));
         const offset = self.head();
-        blit.renderAny(src, self.mode, &self.grid, self.options);
+        self.renderInto(src, post_effects);
         const o: ansi.Options = if (self.prev_valid)
             .{ .redraw = .row_skip, .prev = &self.prev }
         else
@@ -111,6 +118,23 @@ pub const Presenter = struct {
         self.prev_valid = true;
         if (stats.rows == 0) return self.tint[0..0];
         return self.assemble(stats, offset);
+    }
+
+    /// Cells first (through the effects that declare `cell`), then the whole
+    /// grid (through the ones that declare `grid`), then the caller emits.
+    fn renderInto(self: *Presenter, src: anytype, post_effects: anytype) void {
+        if (comptime post_mod.isEmpty(@TypeOf(post_effects))) {
+            blit.renderAny(src, self.mode, &self.grid, self.options);
+        } else {
+            var sink = post_mod.Sink(*Grid, @TypeOf(post_effects)){
+                .inner = &self.grid,
+                .effects = post_effects,
+            };
+            blit.renderAny(src, self.mode, &sink, self.options);
+        }
+        inline for (post_effects) |e| {
+            if (comptime post_mod.hasGrid(@TypeOf(e))) e.grid(&self.grid, &self.prev);
+        }
     }
 
     fn head(self: *Presenter) usize {
@@ -161,13 +185,13 @@ test "sync markers wrap the frame only when supported" {
 
     var on = try Presenter.init(std.testing.allocator, .{ .cols = 4, .rows = 2 }, capsWithSync(true), .half);
     defer on.deinit();
-    const wrapped = try on.draw(source.sampler(&solid));
+    const wrapped = try on.draw(source.sampler(&solid), .{});
     try std.testing.expect(std.mem.startsWith(u8, wrapped, ansi.sync_on));
     try std.testing.expect(std.mem.endsWith(u8, wrapped, ansi.sync_off));
 
     var off = try Presenter.init(std.testing.allocator, .{ .cols = 4, .rows = 2 }, capsWithSync(false), .half);
     defer off.deinit();
-    const plain = try off.draw(source.sampler(&solid));
+    const plain = try off.draw(source.sampler(&solid), .{});
     try std.testing.expect(std.mem.find(u8, plain, "2026") == null);
 }
 
@@ -182,9 +206,9 @@ test "unchanged frame produces no bytes" {
     var p = try Presenter.init(std.testing.allocator, .{ .cols = 6, .rows = 3 }, capsWithSync(true), .half);
     defer p.deinit();
 
-    const first = try p.drawDiff(source.sampler(&solid));
+    const first = try p.drawDiff(source.sampler(&solid), .{});
     try std.testing.expect(first.len > 0);
-    const second = try p.drawDiff(source.sampler(&solid));
+    const second = try p.drawDiff(source.sampler(&solid), .{});
     try std.testing.expectEqual(@as(usize, 0), second.len);
 }
 
@@ -194,14 +218,52 @@ test "a full draw re-bases the diff" {
     var p = try Presenter.init(std.testing.allocator, .{ .cols = 6, .rows = 3 }, capsWithSync(false), .half);
     defer p.deinit();
 
-    _ = try p.drawDiff(source.sampler(&a));
-    _ = try p.draw(source.sampler(&b));
+    _ = try p.drawDiff(source.sampler(&a), .{});
+    _ = try p.draw(source.sampler(&b), .{});
 
-    const repaint = try p.drawDiff(source.sampler(&a));
+    const repaint = try p.drawDiff(source.sampler(&a), .{});
     try std.testing.expect(repaint.len > 0);
 
-    const unchanged = try p.drawDiff(source.sampler(&a));
+    const unchanged = try p.drawDiff(source.sampler(&a), .{});
     try std.testing.expectEqual(@as(usize, 0), unchanged.len);
+}
+
+const Recolour = struct {
+    fg: types.RGB,
+    pub fn cell(self: *Recolour, c: types.Cell, _: u16, _: u16) types.Cell {
+        var out = c;
+        out.fg = self.fg;
+        return out;
+    }
+};
+
+const CopyShown = struct {
+    pub fn grid(_: *CopyShown, g: *Grid, shown: *const Grid) void {
+        @memcpy(g.cells, shown.cells);
+    }
+};
+
+test "a cell effect reaches the wire" {
+    var solid = Solid{ .color = .{ .r = 1, .g = 2, .b = 3 } };
+    var p = try Presenter.init(std.testing.allocator, .{ .cols = 2, .rows = 1 }, capsWithSync(false), .half);
+    defer p.deinit();
+
+    var recolour = Recolour{ .fg = .{ .r = 200, .g = 0, .b = 0 } };
+    const bytes = try p.draw(source.sampler(&solid), .{&recolour});
+    try std.testing.expect(std.mem.find(u8, bytes, "38;2;200;0;0") != null);
+}
+
+test "a grid effect runs before the diff, and sees the screen" {
+    var a = Solid{ .color = .{ .r = 9, .g = 9, .b = 9 } };
+    var b = Solid{ .color = .{ .r = 200, .g = 100, .b = 50 } };
+    var p = try Presenter.init(std.testing.allocator, .{ .cols = 3, .rows = 2 }, capsWithSync(false), .half);
+    defer p.deinit();
+
+    _ = try p.draw(source.sampler(&a), .{});
+
+    var copy = CopyShown{};
+    const second = try p.drawDiff(source.sampler(&b), .{&copy});
+    try std.testing.expectEqual(@as(usize, 0), second.len);
 }
 
 test "resize repaints even when prev matches the new frame" {
@@ -209,13 +271,13 @@ test "resize repaints even when prev matches the new frame" {
     var p = try Presenter.init(std.testing.allocator, .{ .cols = 4, .rows = 2 }, capsWithSync(false), .half);
     defer p.deinit();
 
-    _ = try p.drawDiff(source.sampler(&solid));
+    _ = try p.drawDiff(source.sampler(&solid), .{});
     try p.resize(.{ .cols = 9, .rows = 5 });
 
     blit.renderAny(source.sampler(&solid), p.mode, &p.grid, p.options);
     @memcpy(p.prev.cells, p.grid.cells);
 
-    const out = try p.drawDiff(source.sampler(&solid));
+    const out = try p.drawDiff(source.sampler(&solid), .{});
     try std.testing.expect(out.len > 0);
 }
 
@@ -226,5 +288,5 @@ test "resize keeps the presenter usable" {
     try p.resize(.{ .cols = 9, .rows = 5 });
     try std.testing.expectEqual(@as(u16, 9), p.size.cols);
     try std.testing.expectEqual(@as(usize, 45), p.grid.cells.len);
-    try std.testing.expect((try p.draw(source.sampler(&solid))).len > 0);
+    try std.testing.expect((try p.draw(source.sampler(&solid), .{})).len > 0);
 }

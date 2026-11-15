@@ -239,7 +239,7 @@ pub fn main(init: std.process.Init) !void {
         if (!paused) scene.t += @as(f32, @floatFromInt(frame_ns)) / @as(f32, std.time.ns_per_s) * 0.7;
 
         const t0 = now(io);
-        const bytes = try presenter.drawDiff(farewell.sampler(&scene));
+        const bytes = try presenter.drawDiff(farewell.sampler(&scene), .{});
         const t1 = now(io);
         if (bytes.len > 0) try host.write(bytes);
         const t2 = now(io);
