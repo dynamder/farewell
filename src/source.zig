@@ -46,9 +46,22 @@ pub const Frame = struct {
 pub const Sampler = struct {
     ctx: *const anyopaque,
     call: *const fn (ctx: *const anyopaque, u: f32, v: f32) RGB,
+    /// Optional: the colours for one row of samples at the same `v`. A source
+    /// that can compute several samples at once -- a scene marching four rays
+    /// per vector, an image with a fast path -- declares
+    /// `row(self, us: []const f32, v: f32, out: []RGB) void` and this is bound
+    /// to it. Null means the caller samples one at a time.
+    row: ?*const fn (ctx: *const anyopaque, us: []const f32, v: f32, out: []RGB) void = null,
 
     pub inline fn at(s: Sampler, u: f32, v: f32) RGB {
         return s.call(s.ctx, u, v);
+    }
+
+    /// Fills `out` from the row hook; false when the source has none.
+    pub inline fn rowAt(s: Sampler, us: []const f32, v: f32, out: []RGB) bool {
+        const hook = s.row orelse return false;
+        hook(s.ctx, us, v, out);
+        return true;
     }
 };
 
@@ -65,8 +78,18 @@ pub fn sampler(ptr: anytype) Sampler {
             const self: *const T = @ptrCast(@alignCast(ctx));
             return self.sample(u, v);
         }
+
+        fn row(ctx: *const anyopaque, us: []const f32, v: f32, out: []RGB) void {
+            const self: *const T = @ptrCast(@alignCast(ctx));
+            self.row(us, v, out);
+        }
     };
-    return .{ .ctx = @ptrCast(ptr), .call = Binder.call };
+
+    return .{
+        .ctx = @ptrCast(ptr),
+        .call = Binder.call,
+        .row = if (comptime @hasDecl(T, "row")) Binder.row else null,
+    };
 }
 
 /// True when `T` (or the type it points at) exposes `at(u, v) RGB`.

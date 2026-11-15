@@ -136,6 +136,19 @@ fn packBraille(s: []const RGB, o: Options) Cell {
     };
 }
 
+/// True when `T` (or the type it points at) can fill a whole row of samples at
+/// once, through `rowAt(us, v, out) bool`.
+pub fn hasRow(comptime T: type) bool {
+    const U = switch (@typeInfo(T)) {
+        .pointer => |p| p.child,
+        else => T,
+    };
+    return switch (@typeInfo(U)) {
+        .@"struct", .@"union", .@"enum", .@"opaque" => @hasDecl(U, "rowAt"),
+        else => false,
+    };
+}
+
 /// True when `T` (or the type it points at) can receive cells: it declares
 /// `size() Size` and `put(x, y, Cell)`.
 pub fn isSink(comptime T: type) bool {
@@ -184,13 +197,27 @@ const Geometry = struct {
         const n: usize = @as(usize, d.nx) * @as(usize, d.ny);
         var samples: [n]RGB = @splat(RGB.black);
         inline for (0..ny) |sy| {
+            const py = (@as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(sy)) + 0.5) / @as(f32, @floatFromInt(ny))) * self.ch;
+            const v: f32 = switch (uv) {
+                .stretch => py / self.ph,
+                .square => (py + self.offy) / self.side,
+            };
+
+            // The u values for this row are computed once, so the row hook and
+            // the one-at-a-time path feed the source the same numbers.
+            var us: [nx]f32 = undefined;
             inline for (0..nx) |sx| {
                 const px = (@as(f32, @floatFromInt(x)) + (@as(f32, @floatFromInt(sx)) + 0.5) / @as(f32, @floatFromInt(nx))) * self.cw;
-                const py = (@as(f32, @floatFromInt(y)) + (@as(f32, @floatFromInt(sy)) + 0.5) / @as(f32, @floatFromInt(ny))) * self.ch;
-                samples[sy * nx + sx] = switch (uv) {
-                    .stretch => src.at(px / self.pw, py / self.ph),
-                    .square => src.at((px + self.offx) / self.side, (py + self.offy) / self.side),
+                us[sx] = switch (uv) {
+                    .stretch => px / self.pw,
+                    .square => (px + self.offx) / self.side,
                 };
+            }
+
+            const row = samples[sy * nx ..][0..nx];
+            const filled = if (comptime hasRow(@TypeOf(src))) src.rowAt(us[0..], v, row) else false;
+            if (!filled) {
+                inline for (0..nx) |sx| row[sx] = src.at(us[sx], v);
             }
         }
         return pack(mode, samples[0..n], o);
@@ -276,6 +303,66 @@ test "ink packs a two colour block as the block that matches it" {
     try std.testing.expectEqual(@as(u21, 0x2584), cell.cp);
     try std.testing.expect(cell.fg.eql(RGB.white));
     try std.testing.expect(cell.bg.eql(RGB.black));
+}
+
+var row_calls: usize = 0;
+
+fn encode(u: f32, v: f32) RGB {
+    return .{
+        .r = @intFromFloat(u * 255.0),
+        .g = @intFromFloat(v * 255.0),
+        .b = 7,
+    };
+}
+
+const ScalarScene = struct {
+    pub fn sample(_: *const ScalarScene, u: f32, v: f32) RGB {
+        return encode(u, v);
+    }
+};
+
+/// The same colours, computed four lanes at a time, to stand in for a scene
+/// that marches several rays per vector.
+const RowScene = struct {
+    pub fn sample(_: *const RowScene, u: f32, v: f32) RGB {
+        return encode(u, v);
+    }
+
+    pub fn row(_: *const RowScene, us: []const f32, v: f32, out: []RGB) void {
+        row_calls += 1;
+        var i: usize = 0;
+        while (i + 4 <= us.len) : (i += 4) {
+            const lane: @Vector(4, f32) = us[i..][0..4].*;
+            const r = lane * @as(@Vector(4, f32), @splat(255.0));
+            inline for (0..4) |k| out[i + k] = .{ .r = @intFromFloat(r[k]), .g = @intFromFloat(v * 255.0), .b = 7 };
+        }
+        while (i < us.len) : (i += 1) out[i] = encode(us[i], v);
+    }
+};
+
+test "a row hook gives the same cells as one sample at a time" {
+    const scalar = ScalarScene{};
+    const rowed = RowScene{};
+
+    inline for ([_]Mode{ .half, .braille, .ink }) |mode| {
+        var a = try Grid.init(std.testing.allocator, 5, 3);
+        defer a.deinit(std.testing.allocator);
+        var b = try Grid.init(std.testing.allocator, 5, 3);
+        defer b.deinit(std.testing.allocator);
+
+        row_calls = 0;
+        render(source.sampler(&scalar), mode, &a, .{ .uv = .square });
+        try std.testing.expectEqual(@as(usize, 0), row_calls);
+
+        render(source.sampler(&rowed), mode, &b, .{ .uv = .square });
+        try std.testing.expect(row_calls > 0);
+
+        for (a.cells, b.cells) |x, y| {
+            try std.testing.expectEqual(x.cp, y.cp);
+            try std.testing.expect(x.fg.eql(y.fg));
+            try std.testing.expect(x.bg.eql(y.bg));
+        }
+    }
 }
 
 test "render fills a grid from a sampler" {
