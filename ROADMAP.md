@@ -17,8 +17,6 @@
 - **能力探测**：`caps.Probe` 目前只由宿主填，demo 用 `--caps` 顶着。自己写 DA1 /
   DECRQM（还要处理 tmux 透传、超时、部分读），还是把 vaxis 只当 Tty + 探测层拿进
   demo？两条路都不影响包本身零依赖。
-- **cell 级接缝**：`renderInto(src, mode, sink, opts)`，让有事件循环的宿主（vaxis 或
-  自研）把 farewell 当画布用，适配器约十五行，库不依赖任何 TUI 框架。
 
 ## 非目标
 

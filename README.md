@@ -14,7 +14,7 @@ Source ──blit──> Grid ──ansi──> bytes ──> tty
 
 | 文件 | 内容 |
 | --- | --- |
-| `src/types.zig` | `RGB` `Cell` `Grid` `Mode`（ascii / bars / half / quad / sextant / braille 的密度表） |
+| `src/types.zig` | `RGB` `Cell` `Grid` `Size` `Mode`（ascii / bars / half / quad / sextant / braille 的密度表） |
 | `src/source.zig` | `Frame`、`Sampler`、`sampler(&scene)` 绑定器 |
 | `src/blit.zig` | 各档打包器；`render`、`renderAny` |
 | `src/ansi.zig` | SGR 合并、CRLF 换行、`row_skip` 按行 diff |
@@ -38,6 +38,75 @@ const stats = try farewell.emit(&grid, buf, .{});
 
 `uv` 有两种语义：`.stretch` 铺满网格（图片），`.square` 居中正方并按 `cell_px`
 校正纵横比（程序化场景，圆就是圆）。
+
+## 接入宿主
+
+库只管「像素 → cell → 字节」，跟终端说话的永远是宿主。两种形态选一种。
+
+**① 自己写字节**：`Presenter` 装配好一整片，宿主一次写出去。
+
+```zig
+var p = try farewell.Presenter.init(alloc, size, caps, .half);
+defer p.deinit();
+
+while (running) {
+    try p.resize(host.refreshSize());            // 尺寸没变时是空操作
+    const bytes = try p.drawDiff(farewell.sampler(&scene));
+    if (bytes.len > 0) try host.write(bytes);    // 没变化时不用写
+}
+```
+
+`resize` 之后的第一帧一定是整帧；`drawDiff` 返回的切片在下次 `draw`/`resize`/`deinit`
+前有效。切档就改 `p.want`，再用 `farewell.select(caps, want)` 让能力位修正它。
+`demo/host.zig` 是完整的参考实现，它只做四件事：问尺寸、读一个键、进 raw mode、
+一帧写一次。
+
+**② 已经有事件循环**：把 cell 画进宿主的容器，diff、写入、同步输出都交给它。
+
+```zig
+const Canvas = struct {
+    w: u16,
+    h: u16,
+    win: vaxis.Window,
+    glyphs: []u8, // 4 字节/cell，跨帧复用
+
+    pub fn size(self: Canvas) farewell.Size {
+        return .{ .cols = self.w, .rows = self.h };
+    }
+
+    pub fn put(self: *Canvas, x: u16, y: u16, c: farewell.Cell) void {
+        const off = (@as(usize, y) * self.w + x) * 4;
+        const n = std.unicode.utf8Encode(c.cp, self.glyphs[off..][0..4]) catch unreachable;
+        self.win.writeCell(x, y, .{
+            .char = .{ .grapheme = self.glyphs[off..][0..n], .width = 1 },
+            .style = .{
+                .fg = .{ .rgb = .{ c.fg.r, c.fg.g, c.fg.b } },
+                .bg = .{ .rgb = .{ c.bg.r, c.bg.g, c.bg.b } },
+                .bold = c.attr.bold,
+                .dim = c.attr.dim,
+                .italic = c.attr.italic,
+                .blink = c.attr.blink,
+                .reverse = c.attr.reverse,
+                .strikethrough = c.attr.strike,
+                .ul_style = if (c.attr.underline) .single else .off,
+            },
+        });
+    }
+};
+
+farewell.render(farewell.sampler(&scene), .half, &canvas, .{ .uv = .square });
+```
+
+sink 的契约只有两条：`size() Size` 和 `put(x, y, Cell)`。`farewell.Grid` 自己就满足，
+所以「先画进 Grid 再用」也不需要适配器。
+
+用 vaxis 当例子，三点要留意（换别的宿主同理）：
+
+- **字形字节要活得比 `put` 久**。vaxis 的 `Cell.char.grapheme` 是切片，写进去只存指针，
+  真正读是在它 render 的时候；所以按 `4 字节/cell` 预分配、跨帧复用。
+- **颜色是单向的**。我们只有具体 RGB，vaxis 的 `Color.default`（跟随主题）我们表达不
+  出来；反方向会丢语义，所以不提供映射回来。
+- **下划线**在 vaxis 里不是 bool，是 `ul_style`；其余七个属性一一对应。
 
 ## 构建
 
