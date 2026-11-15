@@ -4,8 +4,8 @@
 用于创作终端艺术。
 
 ```
-Source ──blit──> Grid ──ansi──> bytes ──> tty
-        CPU 受限        带宽受限
+Source ──blit──> Grid ──post──> Grid ──ansi──> bytes ──> tty
+        CPU 受限         后处理        带宽受限
 ```
 
 管线本身不碰终端：能力位由调用方给，字节由调用方写。
@@ -17,7 +17,9 @@ Source ──blit──> Grid ──ansi──> bytes ──> tty
 | `src/types.zig` | `RGB` `Cell` `Grid` `Size` `Mode`（ascii / bars / half / quad / sextant / braille 的密度表） |
 | `src/source.zig` | `Frame`、`Sampler`、`sampler(&scene)` 绑定器 |
 | `src/blit.zig` | 各档打包器；`render`、`renderAny` |
-| `src/ansi.zig` | SGR 合并、CRLF 换行、`row_skip` 按行 diff |
+| `src/ansi.zig` | SGR 合并（真彩色或调色板索引）、CRLF 换行、`row_skip` 按行 diff |
+| `src/post.zig` | 后处理阶段的接线：效果按元组传入，逐格与整帧两档 |
+| `src/quant.zig` | 调色板、最近色、`quant.Fixed` 量化效果 |
 | `src/caps.zig` | 终端与字体能力位、来源轨迹、覆盖语法、降级阶梯 |
 | `src/present.zig` | 帧装配：grid + 模式 + 缓冲，整帧一次写出 |
 | `src/pacer.zig` | 帧预算：超预算先降帧率，到底后降档，回升走反方向 |
@@ -109,6 +111,41 @@ sink 的契约只有两条：`size() Size` 和 `put(x, y, Cell)`。`farewell.Gri
   出来；反方向会丢语义，所以不提供映射回来。
 - **下划线**在 vaxis 里不是 bool，是 `ul_style`；其余七个属性一一对应。
 
+## 后处理
+
+`blit` 把像素变成格，`ansi` 把格变成字节，中间那一段是后处理。效果就是**带方法的类型**，按元组传给绘制调用：
+
+```zig
+const quantised = farewell.quant.Fixed{ .table = .xterm256 };
+const bytes = try p.drawDiff(farewell.sampler(&scene), .{&quantised});
+```
+
+声明哪个方法就进哪个阶段：
+
+| 方法 | 时机 | 能看见 |
+| --- | --- | --- |
+| `cell(self, c, x, y) Cell` | 每格产出时 | 这一格 + 位置 |
+| `grid(self, g, shown) void` | 整帧渲染完、编码前 | 整帧 + 上一帧（`shown`） |
+
+顺序就是元组顺序，`.{}` 表示不做后处理（那条路径与没有这个功能时逐字节相同）。作者自己的效果是十行：
+
+```zig
+const Invert = struct {
+    pub fn cell(_: *const Invert, c: farewell.Cell, _: u16, _: u16) farewell.Cell {
+        return .{ .cp = c.cp, .attr = c.attr, .fg = sub(c.fg), .bg = sub(c.bg) };
+    }
+};
+```
+
+量化自带一个效果（`quant.Fixed`）：把每格颜色吸附到调色板，并声明 `palette()`，编码器据此写
+`38;5;N` 而不是 `38;2;r;g;b`。没有声明就写真彩色——效果的输出和编码方式只有一个真相源。
+
+两条约束：
+
+- **逐格效果必须是 `(cell, x, y)` 的纯函数**。`prev` 里存的是后处理之后的格，diff 拿它和新帧比；
+  带历史状态的逐格效果会让 diff 误判（时间抖动因此要单独设计）。
+- **整帧效果可以改几何**（读写两份格），逐格效果只能改格本身。
+
 ## 帧预算
 
 `Presenter` 不知道时间。宿主把每帧的两段耗时喂给 `Pacer`，它只回答"该动什么"：
@@ -166,6 +203,7 @@ zig build run -Doptimize=ReleaseFast -- --frames=120 --fps=60
 | `--fps=N` | 目标帧率，`0` 表示不节流 |
 | `--mode=NAME` | 起始档位：`ascii` `bars` `half` `quad` `sextant` `braille` |
 | `--caps=SPEC` | 覆盖能力位，例如 `--caps=+sync_output,-octant` |
+| `--color=MODE` | `auto`（默认，终端不支持真彩时才走 256）、`truecolor`、`256` |
 
 退出时往 stderr 打一行：帧数、实际 fps、render 与 write 各自的毫秒数、每帧字节、
 每 cell 字节、最终档位与尺寸、超预算的帧数、pacer 最后定下的帧率（`0` 表示不节流）。
@@ -184,6 +222,10 @@ render 与 write 分开给出。
 
 字节/cell 取决于画面：平坦区域只付一个字符（3 字节），渐变更贵，所以更大的网格反而
 更便宜。任何固定常数（比如「36 字节/cell」）都会给出错误预算。
+
+色深是比密度更大的杠杆：同一场景 120×36，`--color=256` 是 **9.4 KB/帧**，真彩色
+**19.6 KB/帧**。省的不只是每条 SGR 的字节——量化后相邻格更容易撞成同一个槽位，
+每帧 SGR 从 298 条降到 110 条。
 
 ## 状态与路线
 

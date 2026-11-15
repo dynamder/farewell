@@ -10,7 +10,10 @@
 | M3 | 宿主接线：尺寸、输入、节流 | done | demo 填满窗口，按键退出，可跑满一帧预算 |
 | M4 | `sixel` 编码 | later | Windows Terminal 里显示一张照片 |
 | M5 | `pacer`：按帧预算降帧，到底后降档 | done | 合成样本覆盖滞回与回升；400×150 的 braille 在 pty 上降到 15 fps 后降为 quad |
-| M6 | 可复用技法：符号墨量、抖动、时间抖动 | later | 同一张图的四档对照 |
+| M6a | 后处理阶段 + 量化：xterm256 | done | fuzz 对拍最近色；120×36 帧字节 19.6 KB → 9.4 KB |
+| M6b | 抖动：有序（Bayer） | later | 256 色下梯度不出现色阶 |
+| M6c | 符号墨量匹配（chafa） | later | `ascii` 档出现抗锯齿般的中间调 |
+| M6d | 时间抖动 | later | 与 `row_skip` diff 一起重新设计 |
 
 ## 待定
 
