@@ -72,13 +72,14 @@ pub const Cell = struct {
     attr: Attr = .{},
 };
 
-/// Samples taken per cell, horizontally and vertically.
+/// Samples taken per cell, horizontally and vertically. The upper bound is the
+/// 8x8 grid symbol matching needs; everything else is far below it.
 pub const Dims = struct {
-    nx: u3,
-    ny: u3,
+    nx: u4,
+    ny: u4,
 
-    pub fn samples(d: Dims) u4 {
-        return @as(u4, d.nx) * @as(u4, d.ny);
+    pub fn samples(d: Dims) u7 {
+        return @as(u7, d.nx) * @as(u7, d.ny);
     }
 };
 
