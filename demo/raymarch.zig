@@ -107,7 +107,7 @@ const Scene = struct {
     }
 };
 
-const modes = @typeInfo(farewell.Mode).@"enum".field_names.len;
+const mode_count = @typeInfo(farewell.Mode).@"enum".field_names.len;
 
 const Options = struct {
     frames: ?usize = null,
@@ -183,13 +183,36 @@ pub fn main(init: std.process.Init) !void {
     errdefer presenter.deinit();
     presenter.options = .{ .uv = .square };
 
-    const budget_ns: i96 = if (opts.fps == 0) 0 else @divTrunc(@as(i96, std.time.ns_per_s), opts.fps);
+    var supported: [mode_count]farewell.Mode = undefined;
+    var supported_n: usize = 0;
+    for (0..mode_count) |i| {
+        const want: farewell.Mode = @fromBackingInt(@intCast(i));
+        if (farewell.select(caps, want) == want) {
+            supported[supported_n] = want;
+            supported_n += 1;
+        }
+    }
+    const modes = supported[0..supported_n];
+
+    var at: usize = 0;
+    for (modes, 0..) |m, i| {
+        if (m == presenter.mode) {
+            at = i;
+            break;
+        }
+    }
+
+    const pacing = opts.fps != 0;
+    var pacer = farewell.Pacer.init(.{
+        .fps = opts.fps,
+        .levels = @intCast(modes.len),
+        .level = @intCast(at),
+    }, caps.terminal.sync_output);
 
     var meter: Meter = .{};
     var scene: Scene = .{ .t = 0 };
-    var at: usize = @backingInt(opts.mode);
     var paused = false;
-    var frame_ns: i96 = budget_ns;
+    var frame_ns: i96 = if (pacing) @intCast(pacer.budgetNs()) else 0;
     var last = now(io);
     const started = last;
 
@@ -197,15 +220,17 @@ pub fn main(init: std.process.Init) !void {
         if (host.readKey()) |k| switch (k) {
             'q', 0x03, 0x1b => break,
             ' ' => paused = !paused,
-            '+', '=' => {
-                at = (at + 1) % modes;
-                presenter.want = @fromBackingInt(@intCast(at));
-                presenter.mode = farewell.select(caps, presenter.want);
+            '+', '=' => if (at + 1 < modes.len) {
+                at += 1;
+                presenter.want = modes[at];
+                presenter.mode = modes[at];
+                pacer.level = @intCast(at);
             },
-            '-', '_' => {
-                at = (at + modes - 1) % modes;
-                presenter.want = @fromBackingInt(@intCast(at));
-                presenter.mode = farewell.select(caps, presenter.want);
+            '-', '_' => if (at > 0) {
+                at -= 1;
+                presenter.want = modes[at];
+                presenter.mode = modes[at];
+                pacer.level = @intCast(at);
             },
             else => {},
         };
@@ -225,11 +250,20 @@ pub fn main(init: std.process.Init) !void {
         meter.write_ns += t2 - t1;
 
         const spent = t2 - t0;
-        if (budget_ns > 0) {
-            if (spent < budget_ns) {
-                std.Io.sleep(io, .{ .nanoseconds = budget_ns - spent }, .awake) catch {};
+        if (pacing) {
+            const budget: i96 = @intCast(pacer.budgetNs());
+            if (spent < budget) {
+                std.Io.sleep(io, .{ .nanoseconds = budget - spent }, .awake) catch {};
             } else {
                 meter.late += 1;
+            }
+            switch (pacer.observe(.{ .render_ns = @intCast(t1 - t0), .write_ns = @intCast(t2 - t1) })) {
+                .coarser, .finer => {
+                    at = pacer.level;
+                    presenter.want = modes[at];
+                    presenter.mode = modes[at];
+                },
+                .keep, .slower, .faster => {},
             }
         }
 
@@ -240,6 +274,7 @@ pub fn main(init: std.process.Init) !void {
 
     const size = presenter.size;
     const mode = presenter.mode.name();
+    const rate: u16 = if (pacing) pacer.fps else 0;
     presenter.deinit();
     host.deinit();
 
@@ -248,7 +283,7 @@ pub fn main(init: std.process.Init) !void {
     const cells: f64 = @as(f64, @floatFromInt(size.cols)) * @as(f64, @floatFromInt(size.rows));
 
     var description: [512]u8 = undefined;
-    std.debug.print("{s}frames {d}  {d:.1} fps  render {d:.2} ms  write {d:.2} ms  {d:.0} bytes/frame  {d:.1} bytes/cell  mode {s}  {d}x{d}  late {d}\n", .{
+    std.debug.print("{s}frames {d}  {d:.1} fps  render {d:.2} ms  write {d:.2} ms  {d:.0} bytes/frame  {d:.1} bytes/cell  mode {s}  {d}x{d}  late {d}  rate {d}\n", .{
         farewell.caps.describe(caps, &description),
         meter.frames,
         frames / (elapsed / @as(f64, std.time.ns_per_s)),
@@ -260,5 +295,6 @@ pub fn main(init: std.process.Init) !void {
         size.cols,
         size.rows,
         meter.late,
+        rate,
     });
 }
