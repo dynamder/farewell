@@ -19,7 +19,8 @@ Source ──blit──> Grid ──post──> Grid ──ansi──> bytes ─
 | `src/blit.zig` | 各档打包器；`render`、`renderAny` |
 | `src/ansi.zig` | SGR 合并（真彩色或调色板索引）、CRLF 换行、`row_skip` 按行 diff |
 | `src/post.zig` | 后处理阶段的接线：效果按元组传入，逐格与整帧两档 |
-| `src/quant.zig` | 调色板、最近色、`quant.Fixed` 量化效果 |
+| `src/quant.zig` | 调色板、最近色、两槽混色（`mix`）、`quant.Fixed` 量化效果 |
+| `src/dither.zig` | 有序抖动：Bayer 阈值把混色铺到格上 |
 | `src/caps.zig` | 终端与字体能力位、来源轨迹、覆盖语法、降级阶梯 |
 | `src/present.zig` | 帧装配：grid + 模式 + 缓冲，整帧一次写出 |
 | `src/pacer.zig` | 帧预算：超预算先降帧率，到底后降档，回升走反方向 |
@@ -140,6 +141,31 @@ const Invert = struct {
 量化自带一个效果（`quant.Fixed`）：把每格颜色吸附到调色板，并声明 `palette()`，编码器据此写
 `38;5;N` 而不是 `38;2;r;g;b`。没有声明就写真彩色——效果的输出和编码方式只有一个真相源。
 
+### 抖动
+
+`quant.Fixed` 只回答「最近的是哪个槽位」。在它旁边还有一个问题：**能不能用两个槽位把一个颜色
+平均出来**。`quant.mix` 找的是这样一对：沿两点连线取 `fraction` 得到的平均值，离原色最近；
+找不到更好的就退回单色（`fraction = 0`）。候选只取该颜色所在的立方体格、它的六个面邻居、
+以及灰阶两侧——面邻居总比角邻居近，所以次近槽位必在其中。
+
+`dither.Bayer` 把这件事铺到格子上：
+
+```zig
+const bayer = farewell.dither.Bayer{ .table = .xterm256, .matrix = .x8 };
+const bytes = try p.drawDiff(farewell.sampler(&scene), .{&bayer});
+```
+
+阈值只由位置决定，落在 `fraction` 以下的格取 `alt`，其余的取 `slot`。所以一个 tile 的
+平均值就是你画的颜色，而原来撞在同一个槽位上的相邻格现在分担了两个槽位——色阶变成了网点。
+
+256 色灰阶从 0 走到 255，整块 tile 的平均误差最坏是 **8 级（不抖）→ 0.5 级（`bayer4`）
+→ 0.13 级（`bayer8`）**。代价照实说：**不在槽位上的纯色也会被抖成网点**，在 10×20 px 的
+cell 上这很扎眼，字节也会从 9.6 KB/帧 涨到 28 KB/帧（见下面的实测）。所以默认关闭，
+要不要换这点质感由画面决定。
+
+它敢放进逐格阶段，仍是因为那条约束：阈值是 `(x, y)` 的纯函数。时间抖动要用帧号，会把
+`row_skip` diff 弄错，仍然得等 M6d。
+
 两条约束：
 
 - **逐格效果必须是 `(cell, x, y)` 的纯函数**。`prev` 里存的是后处理之后的格，diff 拿它和新帧比；
@@ -204,9 +230,12 @@ zig build run -Doptimize=ReleaseFast -- --frames=120 --fps=60
 | `--mode=NAME` | 起始档位：`ascii` `bars` `half` `quad` `sextant` `braille` |
 | `--caps=SPEC` | 覆盖能力位，例如 `--caps=+sync_output,-octant` |
 | `--color=MODE` | `auto`（默认，终端不支持真彩时才走 256）、`truecolor`、`256` |
+| `--dither=MODE` | `off`（默认）、`bayer2`、`bayer4`、`bayer8`；隐含 256 色 |
+| `--size=COLSxROWS` | 没有 tty 时的回退尺寸（默认 `80x24`），用来复现下面的实测表 |
 
 退出时往 stderr 打一行：帧数、实际 fps、render 与 write 各自的毫秒数、每帧字节、
-每 cell 字节、最终档位与尺寸、超预算的帧数、pacer 最后定下的帧率（`0` 表示不节流）。
+每 cell 字节、每帧 SGR 条数、最终档位与尺寸、超预算的帧数、pacer 最后定下的帧率
+（`0` 表示不节流）。
 
 沙箱环境需要额外指定缓存目录，见 `AGENTS.md`。
 
@@ -223,9 +252,20 @@ render 与 write 分开给出。
 字节/cell 取决于画面：平坦区域只付一个字符（3 字节），渐变更贵，所以更大的网格反而
 更便宜。任何固定常数（比如「36 字节/cell」）都会给出错误预算。
 
-色深是比密度更大的杠杆：同一场景 120×36，`--color=256` 是 **9.4 KB/帧**，真彩色
-**19.6 KB/帧**。省的不只是每条 SGR 的字节——量化后相邻格更容易撞成同一个槽位，
-每帧 SGR 从 298 条降到 110 条。
+色深是比密度更大的杠杆。同一场景、同一尺寸（120×36），同一时段，四种输出：
+
+| 输出 | render/帧 | 字节/帧 | SGR/帧 |
+| --- | --- | --- | --- |
+| 真彩色 | 1.58 ms | 19,640 | 416 |
+| 256 | 1.64 ms | 9,620 | 170 |
+| 256 + `--dither=bayer4` | 2.10 ms | 27,997 | 1,173 |
+| 256 + `--dither=bayer8` | 2.23 ms | 28,763 | 1,193 |
+
+省的不只是每条 SGR 的字节——量化后相邻格更容易撞成同一个槽位，每帧 SGR 从 416 条降到
+170 条。抖动把这个方向反过来：它把撞在一起的格重新拆开，字节涨到真彩色之上，SGR 涨七倍。
+这是抖动的价目表，不是它的缺陷——买的是那 8 级色阶。
+
+（`--size=120x36 --frames=120` 在无 tty 时也能复现这张表；有 tty 时尺寸由终端决定。）
 
 ## 状态与路线
 

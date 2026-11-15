@@ -11,12 +11,14 @@
 | M4 | `sixel` 编码 | later | Windows Terminal 里显示一张照片 |
 | M5 | `pacer`：按帧预算降帧，到底后降档 | done | 合成样本覆盖滞回与回升；400×150 的 braille 在 pty 上降到 15 fps 后降为 quad |
 | M6a | 后处理阶段 + 量化：xterm256 | done | fuzz 对拍最近色；120×36 帧字节 19.6 KB → 9.4 KB |
-| M6b | 抖动：有序（Bayer） | later | 256 色下梯度不出现色阶 |
+| M6b | 抖动：有序（Bayer） | done | 256 色灰阶的 tile 均值误差 8 级 → 0.5 级（`bayer4`）；网点与字节的代价记在 README |
 | M6c | 符号墨量匹配（chafa） | later | `ascii` 档出现抗锯齿般的中间调 |
 | M6d | 时间抖动 | later | 与 `row_skip` diff 一起重新设计 |
 
 ## 待定
 
+- **抖动默认开不开**：现在是 opt-in。它把色阶换成网点，而在 10×20 px 的 cell 上网点很扎眼；
+  要不要按档位或按画面里的梯度决定，得先有真实的画看。
 - **能力探测**：`caps.Probe` 目前只由宿主填，demo 用 `--caps` 顶着。自己写 DA1 /
   DECRQM（还要处理 tmux 透传、超时、部分读），还是把 vaxis 只当 Tty + 探测层拿进
   demo？两条路都不影响包本身零依赖。
