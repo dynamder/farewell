@@ -62,6 +62,9 @@ pub const Attr = packed struct(u8) {
 
 /// One terminal cell. `cp` is a codepoint, not a string: M0 only emits
 /// single-codepoint glyphs (blocks, braille, ascii ramp).
+///
+/// `cp` is a `u21`, so the struct carries undefined padding: compare cells field
+/// by field, never by hashing or comparing their bytes.
 pub const Cell = struct {
     cp: u21 = ' ',
     fg: RGB = .{ .r = 200, .g = 200, .b = 200 },
