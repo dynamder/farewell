@@ -111,12 +111,16 @@ const mode_count = @typeInfo(farewell.Mode).@"enum".field_names.len;
 
 const Colour = enum { auto, truecolor, indexed256 };
 
+const Dither = enum { off, bayer2, bayer4, bayer8 };
+
 const Options = struct {
     frames: ?usize = null,
     fps: u16 = 60,
     caps: ?[]const u8 = null,
     mode: farewell.Mode = .half,
     colour: Colour = .auto,
+    dither: Dither = .off,
+    size: farewell.Size = .{ .cols = 80, .rows = 24 },
 
     fn parse(args: std.process.Args, arena: std.mem.Allocator) ?Options {
         const list = args.toSlice(arena) catch return null;
@@ -140,6 +144,15 @@ const Options = struct {
                     .auto
                 else
                     return null;
+            } else if (std.mem.startsWith(u8, arg, "--dither=")) {
+                o.dither = std.meta.stringToEnum(Dither, arg["--dither=".len..]) orelse return null;
+            } else if (std.mem.startsWith(u8, arg, "--size=")) {
+                const v = arg["--size=".len..];
+                const x = std.mem.indexOfScalar(u8, v, 'x') orelse return null;
+                o.size = .{
+                    .cols = std.fmt.parseInt(u16, v[0..x], 10) catch return null,
+                    .rows = std.fmt.parseInt(u16, v[x + 1 ..], 10) catch return null,
+                };
             } else return null;
         }
         return o;
@@ -149,13 +162,14 @@ const Options = struct {
 const Meter = struct {
     frames: usize = 0,
     bytes: usize = 0,
+    sgr: usize = 0,
     render_ns: i96 = 0,
     write_ns: i96 = 0,
     late: usize = 0,
 };
 
 fn usage() noreturn {
-    std.debug.print("usage: raymarch [--frames=N] [--fps=N] [--caps=SPEC] [--mode=NAME] [--color=auto|truecolor|256]\n", .{});
+    std.debug.print("usage: raymarch [--frames=N] [--fps=N] [--caps=SPEC] [--mode=NAME] [--color=auto|truecolor|256] [--dither=off|bayer2|bayer4|bayer8] [--size=COLSxROWS]\n", .{});
     std.process.exit(2);
 }
 
@@ -182,22 +196,26 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
 
     const opts = Options.parse(init.minimal.args, init.arena.allocator()) orelse usage();
+    if (opts.colour == .truecolor and opts.dither != .off) usage();
 
     const saved_codepage = console.utf8();
     defer console.restore(saved_codepage);
 
-    var host = try Host.open(io, .{ .cols = 80, .rows = 24 });
+    var host = try Host.open(io, opts.size);
     errdefer host.deinit();
 
     var caps = farewell.caps.resolve(capsEnv(init.environ_map), .{});
     if (opts.caps) |spec| farewell.caps.applySpec(&caps, spec) catch return usage();
 
-    const use_palette = switch (opts.colour) {
+    const use_palette = if (opts.dither != .off) true else switch (opts.colour) {
         .indexed256 => true,
         .truecolor => false,
         .auto => !caps.terminal.rgb,
     };
     const quantised = farewell.quant.Fixed{ .table = .xterm256 };
+    const bayer2 = farewell.dither.Bayer{ .table = .xterm256, .matrix = .x2 };
+    const bayer4 = farewell.dither.Bayer{ .table = .xterm256, .matrix = .x4 };
+    const bayer8 = farewell.dither.Bayer{ .table = .xterm256, .matrix = .x8 };
 
     var presenter = try farewell.Presenter.init(gpa, host.refreshSize(), caps, opts.mode);
     errdefer presenter.deinit();
@@ -259,16 +277,21 @@ pub fn main(init: std.process.Init) !void {
         if (!paused) scene.t += @as(f32, @floatFromInt(frame_ns)) / @as(f32, std.time.ns_per_s) * 0.7;
 
         const t0 = now(io);
-        const bytes = if (use_palette)
-            try presenter.drawDiff(farewell.sampler(&scene), .{&quantised})
-        else
-            try presenter.drawDiff(farewell.sampler(&scene), .{});
+        const bytes = if (!use_palette)
+            try presenter.drawDiff(farewell.sampler(&scene), .{})
+        else switch (opts.dither) {
+            .off => try presenter.drawDiff(farewell.sampler(&scene), .{&quantised}),
+            .bayer2 => try presenter.drawDiff(farewell.sampler(&scene), .{&bayer2}),
+            .bayer4 => try presenter.drawDiff(farewell.sampler(&scene), .{&bayer4}),
+            .bayer8 => try presenter.drawDiff(farewell.sampler(&scene), .{&bayer8}),
+        };
         const t1 = now(io);
         if (bytes.len > 0) try host.write(bytes);
         const t2 = now(io);
 
         meter.frames += 1;
         meter.bytes += bytes.len;
+        meter.sgr += presenter.last.sgr;
         meter.render_ns += t1 - t0;
         meter.write_ns += t2 - t1;
 
@@ -306,7 +329,7 @@ pub fn main(init: std.process.Init) !void {
     const cells: f64 = @as(f64, @floatFromInt(size.cols)) * @as(f64, @floatFromInt(size.rows));
 
     var description: [512]u8 = undefined;
-    std.debug.print("{s}frames {d}  {d:.1} fps  render {d:.2} ms  write {d:.2} ms  {d:.0} bytes/frame  {d:.1} bytes/cell  mode {s}  {d}x{d}  late {d}  rate {d}  ink {s}\n", .{
+    std.debug.print("{s}frames {d}  {d:.1} fps  render {d:.2} ms  write {d:.2} ms  {d:.0} bytes/frame  {d:.1} bytes/cell  {d:.0} sgr/frame  mode {s}  {d}x{d}  late {d}  rate {d}  ink {s}\n", .{
         farewell.caps.describe(caps, &description),
         meter.frames,
         frames / (elapsed / @as(f64, std.time.ns_per_s)),
@@ -314,6 +337,7 @@ pub fn main(init: std.process.Init) !void {
         @as(f64, @floatFromInt(meter.write_ns)) / 1e6 / frames,
         @as(f64, @floatFromInt(meter.bytes)) / frames,
         @as(f64, @floatFromInt(meter.bytes)) / frames / cells,
+        @as(f64, @floatFromInt(meter.sgr)) / frames,
         mode,
         size.cols,
         size.rows,
