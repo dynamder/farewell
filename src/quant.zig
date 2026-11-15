@@ -219,7 +219,9 @@ fn nearestFixed(table: []const RGB, c: RGB) u8 {
     return best;
 }
 
-fn distance(a: RGB, b: RGB) u32 {
+/// Squared RGB distance. The shared metric for palette lookup and for symbol
+/// matching; anything that weighs channels differently has to move here first.
+pub fn distance(a: RGB, b: RGB) u32 {
     const dr = @as(i32, a.r) - @as(i32, b.r);
     const dg = @as(i32, a.g) - @as(i32, b.g);
     const db = @as(i32, a.b) - @as(i32, b.b);
