@@ -27,36 +27,110 @@ const console = if (builtin.os.tag == .windows) struct {
     fn restore(_: u32) void {}
 };
 
-const V3 = @Vector(3, f32);
+/// A point with one lane per ray: the SDF is written once and every lane is a
+/// ray. `n` is 1 for the one-at-a-time path and the vector width for a row.
+fn Rays(comptime n: usize) type {
+    return struct {
+        const Self = @This();
+        const L = @Vector(n, f32);
 
-fn dot(a: V3, b: V3) f32 {
-    return @reduce(.Add, a * b);
+        x: L,
+        y: L,
+        z: L,
+
+        fn splat(v: f32) Self {
+            return .{ .x = @splat(v), .y = @splat(v), .z = @splat(v) };
+        }
+
+        /// The same lane values in all three components.
+        fn splatLanes(v: L) Self {
+            return .{ .x = v, .y = v, .z = v };
+        }
+
+        fn add(a: Self, b: Self) Self {
+            return .{ .x = a.x + b.x, .y = a.y + b.y, .z = a.z + b.z };
+        }
+
+        fn scale(a: Self, k: L) Self {
+            return .{ .x = a.x * k, .y = a.y * k, .z = a.z * k };
+        }
+
+        fn abs(a: Self) Self {
+            return .{ .x = @abs(a.x), .y = @abs(a.y), .z = @abs(a.z) };
+        }
+
+        fn maxWith(a: Self, v: f32) Self {
+            const k: L = @splat(v);
+            return .{ .x = @max(a.x, k), .y = @max(a.y, k), .z = @max(a.z, k) };
+        }
+
+        fn dot(a: Self, b: Self) L {
+            return a.x * b.x + a.y * b.y + a.z * b.z;
+        }
+
+        fn norm(a: Self) Self {
+            return a.scale(@as(L, @splat(1.0)) / @sqrt(a.dot(a)));
+        }
+
+        fn maxAxis(a: Self) L {
+            return @max(a.x, @max(a.y, a.z));
+        }
+    };
 }
 
-fn norm(a: V3) V3 {
-    return a / @as(V3, @splat(@sqrt(dot(a, a))));
+fn clamp01(v: anytype) @TypeOf(v) {
+    return @min(@max(v, @as(@TypeOf(v), @splat(0))), @as(@TypeOf(v), @splat(1)));
 }
 
 /// Rounded box, rotated about Y, with a sphere scooped out of it.
-fn sdf(p: V3, t: f32) f32 {
+fn sdf(comptime n: usize, p: Rays(n), t: f32) @Vector(n, f32) {
+    const R = Rays(n);
     const c = @cos(t * 0.7);
     const s = @sin(t * 0.7);
-    const q = V3{ c * p[0] - s * p[2], p[1], s * p[0] + c * p[2] };
-    const b = @as(V3, @splat(0.62));
-    const d = @abs(q) - b;
-    const outside = @max(d, @as(V3, @splat(0.0)));
-    const box = @sqrt(dot(outside, outside)) + @min(@max(d[0], @max(d[1], d[2])), 0.0) - 0.08;
-    const sphere = @sqrt(dot(p, p)) - 0.72;
+    const q = R{
+        .x = p.x * @as(R.L, @splat(c)) - p.z * @as(R.L, @splat(s)),
+        .y = p.y,
+        .z = p.x * @as(R.L, @splat(s)) + p.z * @as(R.L, @splat(c)),
+    };
+    const d = q.abs().add(R.splat(-0.62));
+    const outside = d.maxWith(0.0);
+    const box = @sqrt(outside.dot(outside)) + @min(d.maxAxis(), @as(R.L, @splat(0))) - @as(R.L, @splat(0.08));
+    const sphere = @sqrt(p.dot(p)) - @as(R.L, @splat(0.72));
     return @max(box, -sphere);
 }
 
-fn normal(p: V3, t: f32) V3 {
-    const e: V3 = @splat(0.002);
-    return norm(V3{
-        sdf(p + V3{ e[0], 0, 0 }, t) - sdf(p - V3{ e[0], 0, 0 }, t),
-        sdf(p + V3{ 0, e[1], 0 }, t) - sdf(p - V3{ 0, e[1], 0 }, t),
-        sdf(p + V3{ 0, 0, e[2] }, t) - sdf(p - V3{ 0, 0, e[2] }, t),
-    });
+fn normalAt(comptime n: usize, p: Rays(n), t: f32) Rays(n) {
+    const R = Rays(n);
+    const e: R.L = @splat(0.002);
+    return (R{
+        .x = sdf(n, .{ .x = p.x + e, .y = p.y, .z = p.z }, t) - sdf(n, .{ .x = p.x - e, .y = p.y, .z = p.z }, t),
+        .y = sdf(n, .{ .x = p.x, .y = p.y + e, .z = p.z }, t) - sdf(n, .{ .x = p.x, .y = p.y - e, .z = p.z }, t),
+        .z = sdf(n, .{ .x = p.x, .y = p.y, .z = p.z + e }, t) - sdf(n, .{ .x = p.x, .y = p.y, .z = p.z - e }, t),
+    }).norm();
+}
+
+fn pow32(x: anytype) @TypeOf(x) {
+    const x2 = x * x;
+    const x4 = x2 * x2;
+    const x8 = x4 * x4;
+    const x16 = x8 * x8;
+    return x16 * x16;
+}
+
+fn toRgb(r: f32, g: f32, b: f32) farewell.RGB {
+    return .{
+        .r = @intFromFloat(std.math.clamp(r, 0.0, 1.0) * 255.0),
+        .g = @intFromFloat(std.math.clamp(g, 0.0, 1.0) * 255.0),
+        .b = @intFromFloat(std.math.clamp(b, 0.0, 1.0) * 255.0),
+    };
+}
+
+fn gradient(u: f32, v: f32) farewell.RGB {
+    return .{
+        .r = @intFromFloat(u * 255.0),
+        .g = @intFromFloat(v * 255.0),
+        .b = @intFromFloat((1.0 - u) * 200.0),
+    };
 }
 
 const Kind = enum { raymarch, gradient };
@@ -66,58 +140,82 @@ const Scene = struct {
     kind: Kind = .raymarch,
 
     pub fn sample(self: *const Scene, u: f32, v: f32) farewell.RGB {
-        if (self.kind == .gradient) {
-            return .{
-                .r = @intFromFloat(u * 255.0),
-                .g = @intFromFloat(v * 255.0),
-                .b = @intFromFloat((1.0 - u) * 200.0),
-            };
-        }
-        return self.march(u, v);
+        if (self.kind == .gradient) return gradient(u, v);
+        return self.march(1, .{u}, v)[0];
     }
 
-    fn march(self: *const Scene, u: f32, v: f32) farewell.RGB {
-        const ro = V3{ 0, 0, -4.0 };
-        const rd = norm(V3{ (u - 0.5) * 1.45, (0.5 - v) * 1.45, 1.0 });
-
-        var dist: f32 = 0;
-        var p: V3 = ro;
+    /// The row hook: one march per vector, eight lanes at a time.
+    pub fn row(self: *const Scene, us: []const f32, v: f32, out: []farewell.RGB) void {
+        if (self.kind == .gradient) {
+            for (us, 0..) |u, k| out[k] = gradient(u, v);
+            return;
+        }
         var i: usize = 0;
-        while (i < 48) : (i += 1) {
-            p = ro + rd * @as(V3, @splat(dist));
-            const d = sdf(p, self.t);
-            if (d < 0.002 or dist > 12) break;
-            dist += d;
+        while (i + 8 <= us.len) : (i += 8) {
+            const lane: @Vector(8, f32) = us[i..][0..8].*;
+            @memcpy(out[i..][0..8], &self.march(8, lane, v));
+        }
+        while (i < us.len) : (i += 1) out[i] = self.march(1, .{us[i]}, v)[0];
+    }
+
+    fn march(self: *const Scene, comptime n: usize, us: @Vector(n, f32), v: f32) [n]farewell.RGB {
+        const R = Rays(n);
+        const L = @Vector(n, f32);
+
+        const ro = R{ .x = @splat(0), .y = @splat(0), .z = @splat(-4.0) };
+        const rd = (R{
+            .x = (us - @as(L, @splat(0.5))) * @as(L, @splat(1.45)),
+            .y = @splat((0.5 - v) * 1.45),
+            .z = @splat(1.0),
+        }).norm();
+
+        // Every lane marches in step. A lane that hits or escapes stops moving
+        // rather than leaving, and the loop ends once nothing is moving.
+        var dist: L = @splat(0);
+        var live: @Vector(n, bool) = @splat(true);
+        var step: usize = 0;
+        while (step < 48) : (step += 1) {
+            const p = ro.add(rd.scale(dist));
+            const d = sdf(n, p, self.t);
+            live = live & (d >= @as(L, @splat(0.002))) & (dist <= @as(L, @splat(12.0)));
+            dist = @select(f32, live, dist + d, dist);
+            if (!@reduce(.Or, live)) break;
         }
 
-        if (dist >= 12) {
-            const g = 0.10 + 0.55 * (1.0 - v) * (1.0 - v);
-            return farewell.RGB{
-                .r = @intFromFloat(g * 90.0),
-                .g = @intFromFloat(g * 120.0),
-                .b = @intFromFloat(g * 190.0),
-            };
+        const p = ro.add(rd.scale(dist));
+        const hit = dist < @as(L, @splat(12.0));
+        const nrm = normalAt(n, p, self.t);
+        const light = (R{
+            .x = @splat(@sin(self.t * 1.3) * 1.5),
+            .y = @splat(1.0),
+            .z = @splat(-1.0),
+        }).norm();
+        const front = R{ .x = @splat(0), .y = @splat(0), .z = @splat(-1.0) };
+
+        const diff = @max(nrm.dot(light), @as(L, @splat(0)));
+        const fog = clamp01(@as(L, @splat(1.0)) - dist / @as(L, @splat(16.0)));
+        const lum = (@as(L, @splat(0.25)) + @as(L, @splat(0.75)) * diff) * fog;
+        const rim = clamp01(@as(L, @splat(1.0)) - @max(nrm.dot(front), @as(L, @splat(0))));
+        const spec = pow32(@max(nrm.dot(light.add(front).norm()), @as(L, @splat(0))));
+        const k = clamp01(lum * lum);
+
+        const cold = R{ .x = @splat(0.10), .y = @splat(0.22), .z = @splat(0.55) };
+        const warm = R{ .x = @splat(0.98), .y = @splat(0.86), .z = @splat(0.62) };
+        const lit = cold.scale(@as(L, @splat(1.0)) - k).add(warm.scale(k))
+            .add(R.splatLanes(rim * @as(L, @splat(0.35))))
+            .add(R.splatLanes(spec * @as(L, @splat(0.9))));
+
+        const back = 0.10 + 0.55 * (1.0 - v) * (1.0 - v);
+        const sky = R.splatLanes(@as(L, @splat(back)));
+
+        var out: [n]farewell.RGB = undefined;
+        inline for (0..n) |i| {
+            out[i] = if (hit[i])
+                toRgb(lit.x[i], lit.y[i], lit.z[i])
+            else
+                toRgb(sky.x[i] * (90.0 / 255.0), sky.y[i] * (120.0 / 255.0), sky.z[i] * (190.0 / 255.0));
         }
-
-        const n = normal(p, self.t);
-        const light = norm(V3{ @sin(self.t * 1.3) * 1.5, 1.0, -1.0 });
-        const diff = @max(dot(n, light), 0.0);
-        const fog = std.math.clamp(1.0 - dist / 16.0, 0.0, 1.0);
-        const lum = (0.25 + 0.75 * diff) * fog;
-        const rim = std.math.clamp(1.0 - @max(dot(n, V3{ 0, 0, -1 }), 0.0), 0.0, 1.0);
-        const spec = std.math.pow(f32, @max(dot(n, norm(light + V3{ 0, 0, -1 })), 0.0), 32.0);
-
-        const k = std.math.clamp(lum * lum, 0.0, 1.0);
-        const cold = V3{ 0.10, 0.22, 0.55 };
-        const warm = V3{ 0.98, 0.86, 0.62 };
-        const c = cold * @as(V3, @splat(1.0 - k)) + warm * @as(V3, @splat(k)) +
-            @as(V3, @splat(0.35 * rim)) + @as(V3, @splat(0.9 * spec));
-
-        return farewell.RGB{
-            .r = @intFromFloat(std.math.clamp(c[0], 0.0, 1.0) * 255.0),
-            .g = @intFromFloat(std.math.clamp(c[1], 0.0, 1.0) * 255.0),
-            .b = @intFromFloat(std.math.clamp(c[2], 0.0, 1.0) * 255.0),
-        };
+        return out;
     }
 };
 
