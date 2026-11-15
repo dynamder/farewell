@@ -3,6 +3,7 @@
 const std = @import("std");
 const types = @import("types.zig");
 const source = @import("source.zig");
+const ink = @import("ink.zig");
 
 const RGB = types.RGB;
 const Cell = types.Cell;
@@ -25,6 +26,8 @@ pub const Options = struct {
     ramp: []const u8 = " .:-=+*#%@",
     /// Luma cut for dot/quadrant masks.
     threshold: f32 = 0.5,
+    /// Table and budget for `.ink`.
+    ink: ink.Options = .{},
 };
 
 const QUAD: [16]u21 = .{
@@ -47,6 +50,7 @@ pub fn pack(comptime mode: Mode, s: []const RGB, o: Options) Cell {
         .quad => packSplit(s, 4, o, true),
         .sextant => packSplit(s, 6, o, false),
         .braille => packBraille(s, o),
+        .ink => ink.choose(s[0..64], o.ink),
     };
 }
 
@@ -176,7 +180,8 @@ const Geometry = struct {
         const nx: usize = d.nx;
         const ny: usize = d.ny;
 
-        var samples: [8]RGB = @splat(RGB.black);
+        const n: usize = @as(usize, d.nx) * @as(usize, d.ny);
+        var samples: [n]RGB = @splat(RGB.black);
         inline for (0..ny) |sy| {
             inline for (0..nx) |sx| {
                 const px = (@as(f32, @floatFromInt(x)) + (@as(f32, @floatFromInt(sx)) + 0.5) / @as(f32, @floatFromInt(nx))) * self.cw;
@@ -187,7 +192,7 @@ const Geometry = struct {
                 };
             }
         }
-        return pack(mode, samples[0 .. nx * ny], o);
+        return pack(mode, samples[0..n], o);
     }
 };
 
@@ -262,6 +267,16 @@ test "quad and sextant pick two colours" {
     try std.testing.expectEqual(@as(u21, 0x1FB00), s.cp);
 }
 
+test "ink packs a two colour block as the block that matches it" {
+    var s: [64]RGB = undefined;
+    for (0..64) |i| s[i] = if (i / 8 >= 4) RGB.white else RGB.black;
+
+    const cell = pack(.ink, &s, .{});
+    try std.testing.expectEqual(@as(u21, 0x2584), cell.cp);
+    try std.testing.expect(cell.fg.eql(RGB.white));
+    try std.testing.expect(cell.bg.eql(RGB.black));
+}
+
 test "render fills a grid from a sampler" {
     var scene = Solid{ .color = RGB.white };
     var g = try Grid.init(std.testing.allocator, 3, 2);
@@ -272,6 +287,22 @@ test "render fills a grid from a sampler" {
         try std.testing.expectEqual(@as(u21, 0x2580), c.cp);
         try std.testing.expect(c.fg.eql(RGB.white));
     }
+}
+
+test "render walks all 64 samples in ink mode" {
+    // A flat frame must come out flat: blank glyph, both colours the same. This
+    // is the only test that runs the 8x8 sampling loop end to end.
+    var pix: [8 * 8 * 3]u8 = undefined;
+    @memset(&pix, 200);
+    const f = source.Frame.init(8, 8, &pix, .rgb8);
+
+    var g = try Grid.init(std.testing.allocator, 1, 1);
+    defer g.deinit(std.testing.allocator);
+
+    render(&f, .ink, &g, .{});
+    try std.testing.expectEqual(@as(u21, ' '), g.cells[0].cp);
+    try std.testing.expectEqual(@as(u8, 200), g.cells[0].fg.r);
+    try std.testing.expectEqual(@as(u8, 200), g.cells[0].bg.r);
 }
 
 test "renderAny matches render" {

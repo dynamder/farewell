@@ -246,6 +246,7 @@ pub fn select(caps: Caps, want: Mode) Mode {
         .sextant => if (caps.font.sextant) .sextant else select(caps, .braille),
         .braille => if (caps.font.braille) .braille else select(caps, .half),
         .quad => if (caps.font.quadrant) .quad else select(caps, .half),
+        .ink => if (caps.font.quadrant) .ink else select(caps, .half),
         .half, .bars, .ascii => want,
     };
 }
@@ -281,6 +282,16 @@ pub fn describe(caps: Caps, buf: []u8) []const u8 {
     c.line(Terminal, "terminal  ", caps.terminal, caps.origins.terminal);
     c.line(Font, "font      ", caps.font, caps.origins.font);
     return buf[0..c.i];
+}
+
+test "ink needs the same font coverage as quadrants" {
+    var caps = Caps{};
+    caps.font.utf8 = true;
+    caps.font.quadrant = true;
+    try std.testing.expectEqual(Mode.ink, select(caps, .ink));
+
+    caps.font.quadrant = false;
+    try std.testing.expectEqual(Mode.half, select(caps, .ink));
 }
 
 test "windows terminal: sixel comes from WT_SESSION" {

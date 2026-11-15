@@ -96,6 +96,9 @@ pub const Mode = enum {
     sextant,
     /// 2x4 — braille dots. Denser than sextant and far better supported.
     braille,
+    /// 8x8 — symbol ink matching: one glyph from a measured table plus two
+    /// colours, chosen per cell. The most expensive rung.
+    ink,
 
     pub fn density(m: Mode) Dims {
         return switch (m) {
@@ -105,6 +108,7 @@ pub const Mode = enum {
             .quad => .{ .nx = 2, .ny = 2 },
             .sextant => .{ .nx = 2, .ny = 3 },
             .braille => .{ .nx = 2, .ny = 4 },
+            .ink => .{ .nx = 8, .ny = 8 },
         };
     }
 
