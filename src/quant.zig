@@ -1,4 +1,4 @@
-//! Colour quantisation: palettes and nearest-colour lookup.
+//! Colour quantisation: palettes, nearest-colour lookup, two-slot mixes.
 
 const std = @import("std");
 const types = @import("types.zig");
@@ -30,6 +30,108 @@ pub fn rgb(p: Palette, idx: u8) RGB {
     };
 }
 
+/// A two-slot stand-in for a colour: `alt` in `fraction` of the cells, `slot` in
+/// the rest. `fraction` never exceeds one half — `slot` is the nearer of the two
+/// — and zero means `slot` alone is the answer.
+pub const Mix = struct {
+    slot: u8,
+    alt: u8,
+    fraction: f32,
+};
+
+/// The pair of slots whose average lands closest to `c`, and never farther from
+/// it than the nearest slot alone. `slot` is always `nearest(p, c)`; `alt` is
+/// `slot` again when nothing beats snapping. Pairs that land equally close are
+/// separated by which stipples more quietly: `fraction * (1 - fraction)` of the
+/// squared distance between them.
+pub fn mix(p: Palette, c: RGB) Mix {
+    const base = nearest(p, c);
+    var search = Search{ .c = c, .base = base, .base_rgb = rgb(p, base), .best = base };
+    switch (p) {
+        .xterm256 => offerXterm(&search, c),
+        .fixed => |table| {
+            for (table, 0..) |col, i| search.offer(@intCast(i), col);
+        },
+    }
+    return .{ .slot = base, .alt = search.best, .fraction = search.fraction };
+}
+
+const Search = struct {
+    c: RGB,
+    base: u8,
+    base_rgb: RGB,
+    best: u8,
+    best_err: f32 = std.math.floatMax(f32),
+    best_spread: f32 = std.math.floatMax(f32),
+    fraction: f32 = 0,
+
+    /// Keeps `slot` when the line from `base` to it passes nearer to `c` than
+    /// anything offered before. `fraction` is the clamped projection of `c` onto
+    /// that line, and `best_err` is what is left of `c` off it.
+    fn offer(self: *Search, slot: u8, col: RGB) void {
+        if (slot == self.base) return;
+
+        const vx = asF32(col.r) - asF32(self.base_rgb.r);
+        const vy = asF32(col.g) - asF32(self.base_rgb.g);
+        const vz = asF32(col.b) - asF32(self.base_rgb.b);
+        const denom = vx * vx + vy * vy + vz * vz;
+        if (denom == 0) return;
+
+        const dx = asF32(self.c.r) - asF32(self.base_rgb.r);
+        const dy = asF32(self.c.g) - asF32(self.base_rgb.g);
+        const dz = asF32(self.c.b) - asF32(self.base_rgb.b);
+
+        const p = std.math.clamp((dx * vx + dy * vy + dz * vz) / denom, 0, 0.5);
+        const ex = dx - p * vx;
+        const ey = dy - p * vy;
+        const ez = dz - p * vz;
+        const err = ex * ex + ey * ey + ez * ez;
+        const spread = p * (1 - p) * denom;
+
+        if (err < self.best_err or (err == self.best_err and spread < self.best_spread)) {
+            self.best_err = err;
+            self.best_spread = spread;
+            self.best = slot;
+            self.fraction = p;
+        }
+    }
+};
+
+/// The candidates that can bracket a colour in the 256 table: the cube slot it
+/// sits in, the six cube slots across a face, and the grey ramp on either side.
+/// A face neighbour is always nearer than a corner one, so the second nearest
+/// slot is among these.
+fn offerXterm(s: *Search, c: RGB) void {
+    const idx = [3]usize{ cubeLevel(c.r), cubeLevel(c.g), cubeLevel(c.b) };
+    s.offer(cubeSlot(idx), xtermRgb(cubeSlot(idx)));
+
+    inline for (0..3) |axis| {
+        if (idx[axis] + 1 < CUBE.len) {
+            var up = idx;
+            up[axis] += 1;
+            s.offer(cubeSlot(up), xtermRgb(cubeSlot(up)));
+        }
+        if (idx[axis] > 0) {
+            var down = idx;
+            down[axis] -= 1;
+            s.offer(cubeSlot(down), xtermRgb(cubeSlot(down)));
+        }
+    }
+
+    const g = greySlot(c);
+    s.offer(232 + g, xtermRgb(232 + g));
+    if (g > 0) s.offer(231 + g, xtermRgb(231 + g));
+    if (g + 1 < GREY_SLOTS) s.offer(233 + g, xtermRgb(233 + g));
+}
+
+fn asF32(v: u8) f32 {
+    return @floatFromInt(v);
+}
+
+fn cubeSlot(idx: [3]usize) u8 {
+    return @intCast(16 + 36 * idx[0] + 6 * idx[1] + idx[2]);
+}
+
 /// Snaps every cell colour to a table. Declares `cell`, so it runs while cells
 /// are produced and costs no extra pass over the grid.
 pub const Fixed = struct {
@@ -56,25 +158,46 @@ const GREY_BASE = 8;
 const GREY_STEP = 10;
 const GREY_SLOTS = 24;
 
-fn nearestXterm(c: RGB) u8 {
-    const ri = cubeLevel(c.r);
-    const gi = cubeLevel(c.g);
-    const bi = cubeLevel(c.b);
-    const cube = RGB{ .r = CUBE[ri], .g = CUBE[gi], .b = CUBE[bi] };
+/// Which candidate family the table offers for a colour: the 6x6x6 cube, or the
+/// 24-step grey ramp. The nearer one wins.
+const Family = enum { cube, grey };
 
+const Pick = struct {
+    family: Family,
+    cube: [3]usize,
+    grey: u8,
+};
+
+fn pick(c: RGB) Pick {
+    const idx = [3]usize{ cubeLevel(c.r), cubeLevel(c.g), cubeLevel(c.b) };
+    const cube = RGB{ .r = CUBE[idx[0]], .g = CUBE[idx[1]], .b = CUBE[idx[2]] };
+
+    const grey = greySlot(c);
+    const v: u8 = GREY_BASE + GREY_STEP * grey;
+    const grey_rgb = RGB{ .r = v, .g = v, .b = v };
+
+    return .{
+        .family = if (distance(c, grey_rgb) <= distance(c, cube)) .grey else .cube,
+        .cube = idx,
+        .grey = grey,
+    };
+}
+
+fn nearestXterm(c: RGB) u8 {
+    const p = pick(c);
+    return switch (p.family) {
+        .grey => @as(u8, 232) + p.grey,
+        .cube => cubeSlot(p.cube),
+    };
+}
+
+fn greySlot(c: RGB) u8 {
     const mean = (@as(u32, c.r) + c.g + c.b) / 3;
-    const slot = std.math.clamp(
+    return @intCast(std.math.clamp(
         @divFloor(@as(i32, @intCast(mean)) - GREY_BASE + GREY_STEP / 2, GREY_STEP),
         0,
         GREY_SLOTS - 1,
-    );
-    const grey_value: u8 = GREY_BASE + GREY_STEP * @as(u8, @intCast(slot));
-    const grey = RGB{ .r = grey_value, .g = grey_value, .b = grey_value };
-
-    if (distance(c, grey) <= distance(c, cube)) {
-        return @as(u8, 232) + @as(u8, @intCast(slot));
-    }
-    return @intCast(16 + 36 * ri + 6 * gi + bi);
+    ));
 }
 
 fn cubeLevel(v: u8) usize {
@@ -200,4 +323,73 @@ test "a caller supplied table picks the closer slot" {
     try std.testing.expectEqual(@as(u8, 1), nearest(.{ .fixed = &table }, .{ .r = 200, .g = 200, .b = 200 }));
     try std.testing.expectEqual(@as(u8, 2), nearest(.{ .fixed = &table }, .{ .r = 10, .g = 120, .b = 10 }));
     try std.testing.expectEqual(@as(u8, 0), nearest(.{ .fixed = &table }, .{ .r = 5, .g = 5, .b = 5 }));
+}
+
+test "a colour already on a slot has nothing to mix" {
+    var idx: u8 = 16;
+    while (true) : (idx +%= 1) {
+        const m = mix(.xterm256, xtermRgb(idx));
+        try std.testing.expectEqual(idx, m.slot);
+        try std.testing.expectEqual(@as(f32, 0), m.fraction);
+        if (idx == 255) break;
+    }
+}
+
+test "black is not stippled" {
+    // The cube's first band is 95 wide, but the grey ramp sits right next to
+    // black: any mix there would light the whole area up.
+    const m = mix(.xterm256, RGB.black);
+    try std.testing.expectEqual(@as(f32, 0), m.fraction);
+}
+
+test "a midpoint splits evenly between its neighbouring greys" {
+    // 153 is exactly between grey 148 and 158, which nearest breaks upwards.
+    const m = mix(.xterm256, .{ .r = 153, .g = 153, .b = 153 });
+    try std.testing.expectEqual(@as(u8, 247), m.slot);
+    try std.testing.expectEqual(@as(u8, 246), m.alt);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), m.fraction, 0.01);
+}
+
+test "a colour on the grey axis mixes along it" {
+    // (1,1,1) is one eighth of the way from black to grey 8 and nothing else is
+    // near, so the mix is exact and the fraction is that eighth.
+    const m = mix(.xterm256, .{ .r = 1, .g = 1, .b = 1 });
+    try std.testing.expectEqual(@as(u8, 16), m.slot);
+    try std.testing.expectEqual(@as(u8, 232), m.alt);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.125), m.fraction, 0.01);
+}
+
+test "a saturated colour mixes along its own channel" {
+    // 200 on red sits between cube 175 and 215; mixing greys there would lose red.
+    const m = mix(.xterm256, .{ .r = 200, .g = 0, .b = 0 });
+    try std.testing.expectEqual(@as(u8, 160), m.slot);
+    try std.testing.expectEqual(@as(u8, 124), m.alt);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.375), m.fraction, 0.01);
+}
+
+test "fuzz: the mix is never a worse guess than the snap alone" {
+    var prng = std.Random.DefaultPrng.init(0xbeef);
+    const rand = prng.random();
+    for (0..3000) |_| {
+        const c = RGB{ .r = rand.int(u8), .g = rand.int(u8), .b = rand.int(u8) };
+        const m = mix(.xterm256, c);
+        try std.testing.expect(m.fraction >= 0 and m.fraction <= 0.5);
+
+        const base = xtermRgb(m.slot);
+        const alt = xtermRgb(m.alt);
+        const mixed = RGB{
+            .r = @intFromFloat(@round(@as(f32, @floatFromInt(base.r)) + m.fraction * (@as(f32, @floatFromInt(alt.r)) - @as(f32, @floatFromInt(base.r))))),
+            .g = @intFromFloat(@round(@as(f32, @floatFromInt(base.g)) + m.fraction * (@as(f32, @floatFromInt(alt.g)) - @as(f32, @floatFromInt(base.g))))),
+            .b = @intFromFloat(@round(@as(f32, @floatFromInt(base.b)) + m.fraction * (@as(f32, @floatFromInt(alt.b)) - @as(f32, @floatFromInt(base.b))))),
+        };
+        try std.testing.expect(distance(mixed, c) <= distance(base, c));
+    }
+}
+
+test "a two colour table mixes between the only slot it has" {
+    const table = [_]RGB{ RGB.black, RGB.white };
+    const m = mix(.{ .fixed = &table }, .{ .r = 64, .g = 64, .b = 64 });
+    try std.testing.expectEqual(@as(u8, 0), m.slot);
+    try std.testing.expectEqual(@as(u8, 1), m.alt);
+    try std.testing.expectApproxEqAbs(@as(f32, 64.0 / 255.0), m.fraction, 0.01);
 }
