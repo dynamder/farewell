@@ -11,6 +11,16 @@ env:
   ZIG_VERSION: 0.17.0
 
 jobs:
+  inkmap:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Catches a table that drifted from its generator: the recorded script
+      # hash and parameters must still match. Needs no font and no Zig.
+      - name: glyph table matches its generator
+        run: python3 tools/inkmap.py --check --out src/ink-ascii.zig --cell 10x20 --size 16
+
   build:
     strategy:
       fail-fast: false
