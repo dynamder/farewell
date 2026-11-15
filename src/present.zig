@@ -32,7 +32,12 @@ pub const Presenter = struct {
     grid: Grid,
     prev: Grid,
     tint: []u8,
+    /// Whether `prev` still mirrors the screen. False until the first frame and
+    /// after every resize, both of which make the next frame a full redraw.
+    prev_valid: bool = false,
 
+    /// Allocates the grids and the frame buffer. The first frame is a full
+    /// redraw.
     pub fn init(alloc: std.mem.Allocator, size: Size, caps: Caps, want: Mode) !Presenter {
         var p: Presenter = .{
             .alloc = alloc,
@@ -58,6 +63,7 @@ pub const Presenter = struct {
         self.* = undefined;
     }
 
+    /// Reallocates for `size`; the next frame is a full redraw.
     pub fn resize(self: *Presenter, size: Size) !void {
         if (size.cols == self.size.cols and size.rows == self.size.rows) return;
 
@@ -76,6 +82,7 @@ pub const Presenter = struct {
         self.prev = next_prev;
         self.tint = next_tint;
         self.size = size;
+        self.prev_valid = false;
     }
 
     /// Full redraw; also re-bases the rows `drawDiff` compares against. The
@@ -85,6 +92,7 @@ pub const Presenter = struct {
         blit.renderAny(src, self.mode, &self.grid, self.options);
         const stats = try ansi.emit(&self.grid, self.payload(offset), .{});
         std.mem.swap(Grid, &self.grid, &self.prev);
+        self.prev_valid = true;
         return self.assemble(stats, offset);
     }
 
@@ -94,8 +102,13 @@ pub const Presenter = struct {
     pub fn drawDiff(self: *Presenter, src: anytype) ![]const u8 {
         const offset = self.head();
         blit.renderAny(src, self.mode, &self.grid, self.options);
-        const stats = try ansi.emit(&self.grid, self.payload(offset), .{ .redraw = .row_skip, .prev = &self.prev });
+        const o: ansi.Options = if (self.prev_valid)
+            .{ .redraw = .row_skip, .prev = &self.prev }
+        else
+            .{};
+        const stats = try ansi.emit(&self.grid, self.payload(offset), o);
         std.mem.swap(Grid, &self.grid, &self.prev);
+        self.prev_valid = true;
         if (stats.rows == 0) return self.tint[0..0];
         return self.assemble(stats, offset);
     }
@@ -189,6 +202,21 @@ test "a full draw re-bases the diff" {
 
     const unchanged = try p.drawDiff(source.sampler(&a));
     try std.testing.expectEqual(@as(usize, 0), unchanged.len);
+}
+
+test "resize repaints even when prev matches the new frame" {
+    var solid = Solid{ .color = .{ .r = 1, .g = 2, .b = 3 } };
+    var p = try Presenter.init(std.testing.allocator, .{ .cols = 4, .rows = 2 }, capsWithSync(false), .half);
+    defer p.deinit();
+
+    _ = try p.drawDiff(source.sampler(&solid));
+    try p.resize(.{ .cols = 9, .rows = 5 });
+
+    blit.renderAny(source.sampler(&solid), p.mode, &p.grid, p.options);
+    @memcpy(p.prev.cells, p.grid.cells);
+
+    const out = try p.drawDiff(source.sampler(&solid));
+    try std.testing.expect(out.len > 0);
 }
 
 test "resize keeps the presenter usable" {
