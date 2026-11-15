@@ -34,6 +34,9 @@ pub const Presenter = struct {
     grid: Grid,
     prev: Grid,
     tint: []u8,
+    /// What the last `draw` or `drawDiff` cost. Hosts log it; nothing here reads
+    /// it back.
+    last: ansi.Stats = .{},
     /// Whether `prev` still mirrors the screen. False until the first frame and
     /// after every resize, both of which make the next frame a full redraw.
     prev_valid: bool = false,
@@ -98,6 +101,7 @@ pub const Presenter = struct {
         const stats = try ansi.emit(&self.grid, self.payload(offset), .{
             .palette = paletteOf(post_effects),
         });
+        self.last = stats;
         std.mem.swap(Grid, &self.grid, &self.prev);
         self.prev_valid = true;
         return self.assemble(stats, offset);
@@ -117,6 +121,7 @@ pub const Presenter = struct {
         else
             .{ .palette = paletteOf(post_effects) };
         const stats = try ansi.emit(&self.grid, self.payload(offset), o);
+        self.last = stats;
         std.mem.swap(Grid, &self.grid, &self.prev);
         self.prev_valid = true;
         if (stats.rows == 0) return self.tint[0..0];

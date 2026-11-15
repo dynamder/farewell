@@ -26,6 +26,9 @@ pub const Stats = struct {
     bytes: usize = 0,
     cells: usize = 0,
     rows: usize = 0,
+    /// SGR sequences written. Each one is a colour change the terminal has to
+    /// parse, so a frame's cost is not only its byte count.
+    sgr: usize = 0,
 
     /// Bytes spent per emitted cell, the number the pacer budgets against.
     pub fn bytesPerCell(s: Stats) f32 {
@@ -71,7 +74,7 @@ pub fn emit(g: *const Grid, buf: []u8, o: Options) Error!Stats {
                 const c = g.get(@intCast(x), @intCast(y));
                 const fg: Ink = if (o.palette) |p| .{ .idx = quant.nearest(p, c.fg) } else .{ .rgb = c.fg };
                 const bg: Ink = if (o.palette) |p| .{ .idx = quant.nearest(p, c.bg) } else .{ .rgb = c.bg };
-                try w.sgr(fg, bg, &last_fg, &last_bg);
+                if (try w.sgr(fg, bg, &last_fg, &last_bg)) stats.sgr += 1;
                 try w.cp(c.cp);
                 stats.cells += 1;
             }
@@ -126,11 +129,12 @@ const Writer = struct {
         try w.u8dec(c.b);
     }
 
-    /// Emit the smallest SGR that gets us to (fg, bg).
-    fn sgr(w: *Writer, fg: Ink, bg: Ink, last_fg: *?Ink, last_bg: *?Ink) Error!void {
+    /// Emit the smallest SGR that gets us to (fg, bg); false when neither
+    /// changed and nothing was written.
+    fn sgr(w: *Writer, fg: Ink, bg: Ink, last_fg: *?Ink, last_bg: *?Ink) Error!bool {
         const fg_changed = last_fg.* == null or !std.meta.eql(last_fg.*.?, fg);
         const bg_changed = last_bg.* == null or !std.meta.eql(last_bg.*.?, bg);
-        if (!fg_changed and !bg_changed) return;
+        if (!fg_changed and !bg_changed) return false;
 
         try w.put("\x1b[");
         if (fg_changed) try w.colour("38", fg);
@@ -139,6 +143,7 @@ const Writer = struct {
         try w.put("m");
         last_fg.* = fg;
         last_bg.* = bg;
+        return true;
     }
 
     fn colour(w: *Writer, prefix: []const u8, v: Ink) Error!void {
@@ -206,6 +211,7 @@ test "colours that share a slot cost no second sgr" {
     const out = buf[0..st.bytes];
     try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, out, "\x1b[38"));
     try std.testing.expectEqual(@as(usize, 2), st.cells);
+    try std.testing.expectEqual(@as(usize, 1), st.sgr);
 }
 
 test "unchanged colour costs no sgr" {
@@ -223,6 +229,7 @@ test "unchanged colour costs no sgr" {
         i = p + 2;
     }
     try std.testing.expectEqual(@as(usize, 2), count);
+    try std.testing.expectEqual(@as(usize, 1), st.sgr);
     try std.testing.expect(std.mem.find(u8, out, "###") != null);
 }
 
