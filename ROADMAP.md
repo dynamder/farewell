@@ -4,13 +4,21 @@
 
 | | 里程碑 | 状态 | 验收 |
 | --- | --- | --- | --- |
-| M0 | 与终端无关的核心：`types` `source` `blit` `ansi` | done | 120×36 的 raymarch 4.0 ms/帧 |
+| M0 | 与终端无关的核心：`types` `source` `blit` `ansi` | done | 120×36 的 raymarch 1.4 ms/帧 |
 | M1 | 能力位与来源：`caps` | done | 三台终端的实测场景各有一条单测 |
 | M2 | 帧装配：`present` | done | 整帧一次写出；同步标记只在终端支持时出现 |
-| M3 | 宿主接线：尺寸、输入、节流 | next | demo 填满窗口，按键退出，可跑满一帧预算 |
+| M3 | 宿主接线：尺寸、输入、节流 | done | demo 填满窗口，按键退出，可跑满一帧预算 |
 | M4 | `sixel` 编码 | later | Windows Terminal 里显示一张照片 |
 | M5 | `pacer`：按字节预算降档 | later | Alacritty 上降档后不再撕裂 |
 | M6 | 可复用技法：符号墨量、抖动、时间抖动 | later | 同一张图的四档对照 |
+
+## 待定
+
+- **能力探测**：`caps.Probe` 目前只由宿主填，demo 用 `--caps` 顶着。自己写 DA1 /
+  DECRQM（还要处理 tmux 透传、超时、部分读），还是把 vaxis 只当 Tty + 探测层拿进
+  demo？两条路都不影响包本身零依赖。
+- **cell 级接缝**：`renderInto(src, mode, sink, opts)`，让有事件循环的宿主（vaxis 或
+  自研）把 farewell 当画布用，适配器约十五行，库不依赖任何 TUI 框架。
 
 ## 非目标
 
