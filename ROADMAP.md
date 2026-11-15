@@ -9,7 +9,7 @@
 | M2 | 帧装配：`present` | done | 整帧一次写出；同步标记只在终端支持时出现 |
 | M3 | 宿主接线：尺寸、输入、节流 | done | demo 填满窗口，按键退出，可跑满一帧预算 |
 | M4 | `sixel` 编码 | later | Windows Terminal 里显示一张照片 |
-| M5 | `pacer`：按字节预算降档 | later | Alacritty 上降档后不再撕裂 |
+| M5 | `pacer`：按帧预算降帧，到底后降档 | done | 合成样本覆盖滞回与回升；400×150 的 braille 在 pty 上降到 15 fps 后降为 quad |
 | M6 | 可复用技法：符号墨量、抖动、时间抖动 | later | 同一张图的四档对照 |
 
 ## 待定

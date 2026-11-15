@@ -20,6 +20,7 @@ Source ──blit──> Grid ──ansi──> bytes ──> tty
 | `src/ansi.zig` | SGR 合并、CRLF 换行、`row_skip` 按行 diff |
 | `src/caps.zig` | 终端与字体能力位、来源轨迹、覆盖语法、降级阶梯 |
 | `src/present.zig` | 帧装配：grid + 模式 + 缓冲，整帧一次写出 |
+| `src/pacer.zig` | 帧预算：超预算先降帧率，到底后降档，回升走反方向 |
 
 演示在 `demo/`：`raymarch.zig` 是场景本身，`host.zig` 是终端设备层（尺寸、按键、raw mode、一帧一次写）。这两份只服务演示，不进入包 API。
 
@@ -108,6 +109,41 @@ sink 的契约只有两条：`size() Size` 和 `put(x, y, Cell)`。`farewell.Gri
   出来；反方向会丢语义，所以不提供映射回来。
 - **下划线**在 vaxis 里不是 bool，是 `ul_style`；其余七个属性一一对应。
 
+## 帧预算
+
+`Presenter` 不知道时间。宿主把每帧的两段耗时喂给 `Pacer`，它只回答"该动什么"：
+
+```zig
+var pacer = farewell.Pacer.init(.{
+    .fps = 60,
+    .levels = modes.len,          // 本宿主能渲染的档位数量，0 最省
+    .level = start_level,
+}, caps.terminal.sync_output);
+
+// 每帧
+const budget = pacer.budgetNs();
+const bytes = try p.drawDiff(farewell.sampler(&scene));
+if (bytes.len > 0) try host.write(bytes);
+
+switch (pacer.observe(.{ .render_ns = render, .write_ns = write })) {
+    .slower, .faster => {},                            // 读 pacer.fps
+    .coarser, .finer => setMode(modes[pacer.level]),   // 读 pacer.level
+    .keep => {},
+}
+```
+
+三条策略：
+
+- **滞回**：连续 3 帧超预算才动手，连续 30 帧有余量才回升。一次慢写是噪声，不是判决。
+- **先降帧率，再降档**：60 → 45 → 34 → 26 → 20 → 15，到地板才动档位；回升反过来走，
+  档位先回来，帧率后回来。
+- **没有原子提交就限速**：终端不支持 mode 2026 时帧率上限 30。没有原子提交，画得越快，
+  看到半帧的机会越多。`--caps=+sync_output` 解除这个上限。
+
+（`host.write` 和 `setMode` 是宿主的活儿，这里只是示意。）
+
+`Pacer` 不碰字节数：它判的是"这一帧在不在它的间隔里"，字节由宿主自己记账。
+
 ## 构建
 
 ```sh
@@ -132,7 +168,7 @@ zig build run -Doptimize=ReleaseFast -- --frames=120 --fps=60
 | `--caps=SPEC` | 覆盖能力位，例如 `--caps=+sync_output,-octant` |
 
 退出时往 stderr 打一行：帧数、实际 fps、render 与 write 各自的毫秒数、每帧字节、
-每 cell 字节、最终档位与尺寸、超预算的帧数。
+每 cell 字节、最终档位与尺寸、超预算的帧数、pacer 最后定下的帧率（`0` 表示不节流）。
 
 沙箱环境需要额外指定缓存目录，见 `AGENTS.md`。
 
