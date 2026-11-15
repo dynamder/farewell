@@ -59,10 +59,24 @@ fn normal(p: V3, t: f32) V3 {
     });
 }
 
+const Kind = enum { raymarch, gradient };
+
 const Scene = struct {
     t: f32,
+    kind: Kind = .raymarch,
 
     pub fn sample(self: *const Scene, u: f32, v: f32) farewell.RGB {
+        if (self.kind == .gradient) {
+            return .{
+                .r = @intFromFloat(u * 255.0),
+                .g = @intFromFloat(v * 255.0),
+                .b = @intFromFloat((1.0 - u) * 200.0),
+            };
+        }
+        return self.march(u, v);
+    }
+
+    fn march(self: *const Scene, u: f32, v: f32) farewell.RGB {
         const ro = V3{ 0, 0, -4.0 };
         const rd = norm(V3{ (u - 0.5) * 1.45, (0.5 - v) * 1.45, 1.0 });
 
@@ -120,6 +134,7 @@ const Options = struct {
     mode: farewell.Mode = .half,
     colour: Colour = .auto,
     dither: Dither = .off,
+    kind: Kind = .raymarch,
     size: farewell.Size = .{ .cols = 80, .rows = 24 },
 
     fn parse(args: std.process.Args, arena: std.mem.Allocator) ?Options {
@@ -146,6 +161,8 @@ const Options = struct {
                     return null;
             } else if (std.mem.startsWith(u8, arg, "--dither=")) {
                 o.dither = std.meta.stringToEnum(Dither, arg["--dither=".len..]) orelse return null;
+            } else if (std.mem.startsWith(u8, arg, "--scene=")) {
+                o.kind = std.meta.stringToEnum(Kind, arg["--scene=".len..]) orelse return null;
             } else if (std.mem.startsWith(u8, arg, "--size=")) {
                 const v = arg["--size=".len..];
                 const x = std.mem.indexOfScalar(u8, v, 'x') orelse return null;
@@ -169,7 +186,7 @@ const Meter = struct {
 };
 
 fn usage() noreturn {
-    std.debug.print("usage: raymarch [--frames=N] [--fps=N] [--caps=SPEC] [--mode=NAME] [--color=auto|truecolor|256] [--dither=off|bayer2|bayer4|bayer8] [--size=COLSxROWS]\n", .{});
+    std.debug.print("usage: raymarch [--frames=N] [--fps=N] [--caps=SPEC] [--mode=NAME] [--color=auto|truecolor|256] [--dither=off|bayer2|bayer4|bayer8] [--size=COLSxROWS] [--scene=raymarch|gradient]\n", .{});
     std.process.exit(2);
 }
 
@@ -248,7 +265,7 @@ pub fn main(init: std.process.Init) !void {
     }, caps.terminal.sync_output);
 
     var meter: Meter = .{};
-    var scene: Scene = .{ .t = 0 };
+    var scene: Scene = .{ .t = 0, .kind = opts.kind };
     var paused = false;
     var frame_ns: i96 = if (pacing) @intCast(pacer.budgetNs()) else 0;
     var last = now(io);
