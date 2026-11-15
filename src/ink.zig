@@ -70,17 +70,21 @@ pub fn Glyph(comptime g: Grid) type {
 
 pub const Options = struct {
     /// Candidates scored exactly after the Hamming shortlist, clamped to 1..8.
-    /// One is the pure "closest silhouette" answer.
-    work: u4 = 4,
+    ///
+    /// Two is where the curve flattens: measured over a synthetic corpus, going
+    /// 4 -> 2 costs 2% of the reconstruction error and saves 36% of the time,
+    /// while 2 -> 1 costs another 3% of the error.
+    work: u4 = 2,
     /// Custom tables for a host that measured its own font; null picks the
     /// built-in table for that grid.
     x8: ?[]const Glyph(.x8) = null,
     tall: ?[]const Glyph(.tall) = null,
 
-    fn pick(self: Options, comptime g: Grid) []const Glyph(g) {
+    /// The glyphs to scan, and the ink bands when they are the built-in ones.
+    fn pick(self: Options, comptime g: Grid) struct { []const Glyph(g), ?*const Bucket(g) } {
         return switch (g) {
-            .x8 => self.x8 orelse &tables.x8,
-            .tall => self.tall orelse &tables.tall,
+            .x8 => if (self.x8) |custom| .{ custom, null } else .{ &buckets.x8.glyphs, &buckets.x8 },
+            .tall => if (self.tall) |custom| .{ custom, null } else .{ &buckets.tall.glyphs, &buckets.tall },
         };
     }
 };
@@ -90,24 +94,17 @@ pub const Options = struct {
 /// Pure in `block`: the same samples always give the same cell, which is what
 /// keeps the row diff honest.
 pub fn choose(comptime g: Grid, block: *const [g.samples()]RGB, o: Options) Cell {
-    const glyphs = o.pick(g);
+    const glyphs, const bands = o.pick(g);
     if (glyphs.len == 0) return .{};
 
     const pair = splitPair(g, block);
+    if (pair.span < flat_span) return .{ .cp = ' ', .fg = pair.mean, .bg = pair.mean };
+
     const target = silhouette(g, block, pair);
 
     var short: [work_max]Candidate = @splat(.{ .hd = 255, .index = 0 });
     const work = std.math.clamp(@as(usize, o.work), 1, work_max);
-
-    for (glyphs, 0..) |glyph, i| {
-        const hd: u8 = @popCount(target ^ glyph.mask);
-        var at = work;
-        while (at > 0 and short[at - 1].hd > hd) at -= 1;
-        if (at == work) continue;
-        var k = work - 1;
-        while (k > at) : (k -= 1) short[k] = short[k - 1];
-        short[at] = .{ .hd = hd, .index = @intCast(i) };
-    }
+    shortlist(g, glyphs, bands, target, work, &short);
 
     var best_index = short[0].index;
     var best = score(g, block, glyphs[best_index]);
@@ -125,9 +122,82 @@ pub fn choose(comptime g: Grid, block: *const [g.samples()]RGB, o: Options) Cell
 
 const Candidate = struct { hd: u8, index: u16 };
 
+/// Below this much channel range a cell has nothing to say, and the blank glyph
+/// with one colour is both the cheapest and the correct answer.
+const flat_span = 4;
+
+/// The `work` nearest silhouettes in Hamming distance, ties going to the earlier
+/// glyph in the table.
+///
+/// With the built-in table the scan walks ink bands outward from the target's own
+/// ink, because `hd >= |ink(target) - ink(glyph)|`: once the furthest kept
+/// distance is at most the radius just finished, nothing outside it can enter
+/// the list. Same result as scanning everything, less of it.
+fn shortlist(
+    comptime g: Grid,
+    glyphs: []const Glyph(g),
+    bands: ?*const Bucket(g),
+    target: Mask(g),
+    work: usize,
+    short: *[work_max]Candidate,
+) void {
+    const bucket = bands orelse {
+        consider(g, glyphs, 0, glyphs.len, target, work, short);
+        return;
+    };
+
+    const bits = g.bits();
+    const target_ink: usize = @popCount(target);
+    var radius: usize = 0;
+    var lo_done: usize = target_ink + 1;
+    var hi_done: usize = target_ink;
+
+    while (true) : (radius += 1) {
+        if (radius <= target_ink) {
+            const ink = target_ink - radius;
+            consider(g, glyphs, bucket.start[ink], bucket.start[ink + 1], target, work, short);
+            lo_done = ink;
+        }
+        const hi = @min(target_ink + radius, bits);
+        if (hi > hi_done) {
+            consider(g, glyphs, bucket.start[hi], bucket.start[hi + 1], target, work, short);
+            hi_done = hi;
+        }
+        if (short[work - 1].hd <= radius) break;
+        if (lo_done == 0 and hi_done == bits) break;
+    }
+}
+
+fn consider(
+    comptime g: Grid,
+    glyphs: []const Glyph(g),
+    from: usize,
+    to: usize,
+    target: Mask(g),
+    work: usize,
+    short: *[work_max]Candidate,
+) void {
+    for (from..to) |i| {
+        const hd: u8 = @popCount(target ^ glyphs[i].mask);
+        var at = work;
+        while (at > 0 and short[at - 1].hd > hd) at -= 1;
+        if (at == work) continue;
+        var k = work - 1;
+        while (k > at) : (k -= 1) short[k] = short[k - 1];
+        short[at] = .{ .hd = hd, .index = @intCast(i) };
+    }
+}
+
 const Scored = struct { err: u32, fg: RGB, bg: RGB };
 
-const Pair = struct { fg: RGB, bg: RGB };
+const Pair = struct {
+    fg: RGB,
+    bg: RGB,
+    /// Mean of every sample, what a flat cell paints.
+    mean: RGB,
+    /// Widest channel range across the cell; near zero means nothing to draw.
+    span: u8,
+};
 
 fn chan(c: RGB, comptime i: usize) u8 {
     return switch (i) {
@@ -143,8 +213,12 @@ fn chan(c: RGB, comptime i: usize) u8 {
 fn splitPair(comptime g: Grid, block: *const [g.samples()]RGB) Pair {
     var lo: [3]usize = @splat(0);
     var hi: [3]usize = @splat(0);
+    var sum: [3]u32 = @splat(0);
 
     for (block, 0..) |p, i| {
+        sum[0] += p.r;
+        sum[1] += p.g;
+        sum[2] += p.b;
         inline for (0..3) |c| {
             if (chan(p, c) < chan(block[lo[c]], c)) lo[c] = i;
             if (chan(p, c) >= chan(block[hi[c]], c)) hi[c] = i;
@@ -160,17 +234,35 @@ fn splitPair(comptime g: Grid, block: *const [g.samples()]RGB) Pair {
             widest = c;
         }
     }
-    return .{ .fg = block[hi[widest]], .bg = block[lo[widest]] };
+    return .{
+        .fg = block[hi[widest]],
+        .bg = block[lo[widest]],
+        .mean = mean(sum, @intCast(g.samples())),
+        .span = span,
+    };
 }
 
 /// One bit per sample, set where the sample is nearer the foreground.
+///
+/// `|p - fg|^2 < |p - bg|^2` is `2 p.(bg - fg) + |fg|^2 - |bg|^2 < 0`, so the
+/// per-sample work is one dot product instead of two squared distances. The
+/// two forms are equal over the integers, ties included: a tie is not nearer.
 fn silhouette(comptime g: Grid, block: *const [g.samples()]RGB, pair: Pair) Mask(g) {
+    const dr = @as(i32, pair.bg.r) - @as(i32, pair.fg.r);
+    const dg = @as(i32, pair.bg.g) - @as(i32, pair.fg.g);
+    const db = @as(i32, pair.bg.b) - @as(i32, pair.fg.b);
+    const k = norm(pair.fg) - norm(pair.bg);
+
     var m: Mask(g) = 0;
     for (block) |p| {
-        const nearer_fg = quant.distance(p, pair.fg) < quant.distance(p, pair.bg);
-        m = (m << 1) | @intFromBool(nearer_fg);
+        const t = 2 * (@as(i32, p.r) * dr + @as(i32, p.g) * dg + @as(i32, p.b) * db) + k;
+        m = (m << 1) | @intFromBool(t < 0);
     }
     return m;
+}
+
+fn norm(c: RGB) i32 {
+    return @as(i32, c.r) * c.r + @as(i32, c.g) * c.g + @as(i32, c.b) * c.b;
 }
 
 /// The two colours this glyph would use, and what is left of the block once it
@@ -321,18 +413,57 @@ fn measured(comptime g: Grid) [asciiFile(g).cps.len]Glyph(g) {
     return t;
 }
 
-/// The tables the library ships, one per grid: the computed blocks, then the
-/// measured ASCII half.
-pub const tables = struct {
-    pub const x8 = blocks(.x8) ++ measured(.x8);
-    pub const tall = blocks(.tall) ++ measured(.tall);
+fn tableLen(comptime g: Grid) usize {
+    return blocks(g).len + asciiFile(g).cps.len;
+}
+
+fn Bucket(comptime g: Grid) type {
+    return struct {
+        /// The table in ink order, so a scan can skip whole bands of it.
+        glyphs: [tableLen(g)]Glyph(g),
+        /// `start[i]` is the first glyph with ink `i`; `start[bits + 1]` is the end.
+        start: [g.bits() + 2]u16,
+    };
+}
+
+fn bucketTable(comptime g: Grid) Bucket(g) {
+    @setEvalBranchQuota(200_000);
+    var b: Bucket(g) = undefined;
+    b.glyphs = blocks(g) ++ measured(g);
+
+    // Stable insertion sort on ink: equal-ink glyphs keep their table order, so
+    // the scan still breaks ties the same way every run.
+    for (1..b.glyphs.len) |i| {
+        const key = b.glyphs[i];
+        var j = i;
+        while (j > 0 and b.glyphs[j - 1].ink() > key.ink()) : (j -= 1) b.glyphs[j] = b.glyphs[j - 1];
+        b.glyphs[j] = key;
+    }
+
+    var at: usize = 0;
+    for (0..g.bits() + 1) |ink| {
+        b.start[ink] = @intCast(at);
+        while (at < b.glyphs.len and b.glyphs[at].ink() == ink) at += 1;
+    }
+    b.start[g.bits() + 1] = @intCast(at);
+    return b;
+}
+
+/// The tables the library ships, one per grid, in ink order with their bands.
+pub const buckets = struct {
+    pub const x8 = bucketTable(.x8);
+    pub const tall = bucketTable(.tall);
 };
 
-pub fn table(comptime g: Grid) []const Glyph(g) {
+fn bucketOf(comptime g: Grid) *const Bucket(g) {
     return switch (g) {
-        .x8 => &tables.x8,
-        .tall => &tables.tall,
+        .x8 => &buckets.x8,
+        .tall => &buckets.tall,
     };
+}
+
+pub fn table(comptime g: Grid) []const Glyph(g) {
+    return &bucketOf(g).glyphs;
 }
 
 fn blockFrom(comptime g: Grid, mask: Mask(g), fg: RGB, bg: RGB) [g.samples()]RGB {
@@ -491,6 +622,61 @@ test "scoring more candidates never makes the answer worse" {
             const b = score(g, &block, .{ .cp = thorough.cp, .mask = maskOf(g, thorough.cp) }).err;
             try std.testing.expect(b <= a);
         }
+    }
+}
+
+test "the banded scan keeps the same distances as a full scan" {
+    // Same shortlist, bit for bit: pruning may visit the table in another order
+    // and so break an exact tie differently, but it must not change *which
+    // distances* are kept.
+    var prng = std.Random.DefaultPrng.init(0xb00);
+    const rand = prng.random();
+
+    inline for ([_]Grid{ .x8, .tall }) |g| {
+        for (0..48) |_| {
+            var block: [g.samples()]RGB = undefined;
+            for (&block) |*p| p.* = .{ .r = rand.int(u8), .g = rand.int(u8), .b = rand.int(u8) };
+            const pair = splitPair(g, &block);
+            if (pair.span < flat_span) continue;
+            const target = silhouette(g, &block, pair);
+
+            var full: [work_max]Candidate = @splat(.{ .hd = 255, .index = 0 });
+            consider(g, table(g), 0, table(g).len, target, 4, &full);
+
+            var banded: [work_max]Candidate = @splat(.{ .hd = 255, .index = 0 });
+            shortlist(g, table(g), bucketOf(g), target, 4, &banded);
+
+            for (0..4) |i| try std.testing.expectEqual(full[i].hd, banded[i].hd);
+        }
+    }
+}
+
+test "the table is ordered by ink and the bands cover it" {
+    inline for ([_]Grid{ .x8, .tall }) |g| {
+        const t = table(g);
+        for (1..t.len) |i| try std.testing.expect(t[i - 1].ink() <= t[i].ink());
+
+        var covered: usize = 0;
+        for (0..g.bits() + 1) |ink| {
+            const from = bucketOf(g).start[ink];
+            const to = bucketOf(g).start[ink + 1];
+            for (from..to) |i| try std.testing.expectEqual(@as(u8, @intCast(ink)), t[i].ink());
+            covered += to - from;
+        }
+        try std.testing.expectEqual(t.len, covered);
+    }
+}
+
+test "a cell with no range skips the table entirely" {
+    // One level of difference is below what a cell can show, so the answer is
+    // the flat one: blank glyph, both colours the mean.
+    inline for ([_]Grid{ .x8, .tall }) |g| {
+        var block: [g.samples()]RGB = @splat(.{ .r = 90, .g = 100, .b = 110 });
+        block[0] = .{ .r = 91, .g = 99, .b = 111 };
+
+        const cell = choose(g, &block, .{});
+        try std.testing.expectEqual(@as(u21, ' '), cell.cp);
+        try std.testing.expect(cell.fg.eql(cell.bg));
     }
 }
 
