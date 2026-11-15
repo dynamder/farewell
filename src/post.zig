@@ -15,6 +15,12 @@ pub fn hasGrid(comptime E: type) bool {
     return @hasDecl(target(E), "grid");
 }
 
+/// True when `E` (or what it points at) declares `palette(self) ?Palette`, the
+/// encoder's cue to write slots instead of truecolour.
+pub fn hasPalette(comptime E: type) bool {
+    return @hasDecl(target(E), "palette");
+}
+
 /// True when the effect list is empty, which lets the render path skip the
 /// wrapper entirely.
 pub fn isEmpty(comptime Effects: type) bool {

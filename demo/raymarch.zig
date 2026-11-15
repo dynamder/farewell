@@ -109,11 +109,14 @@ const Scene = struct {
 
 const mode_count = @typeInfo(farewell.Mode).@"enum".field_names.len;
 
+const Colour = enum { auto, truecolor, indexed256 };
+
 const Options = struct {
     frames: ?usize = null,
     fps: u16 = 60,
     caps: ?[]const u8 = null,
     mode: farewell.Mode = .half,
+    colour: Colour = .auto,
 
     fn parse(args: std.process.Args, arena: std.mem.Allocator) ?Options {
         const list = args.toSlice(arena) catch return null;
@@ -127,6 +130,16 @@ const Options = struct {
                 o.caps = arg["--caps=".len..];
             } else if (std.mem.startsWith(u8, arg, "--mode=")) {
                 o.mode = std.meta.stringToEnum(farewell.Mode, arg["--mode=".len..]) orelse return null;
+            } else if (std.mem.startsWith(u8, arg, "--color=")) {
+                const v = arg["--color=".len..];
+                o.colour = if (std.mem.eql(u8, v, "256"))
+                    .indexed256
+                else if (std.mem.eql(u8, v, "truecolor"))
+                    .truecolor
+                else if (std.mem.eql(u8, v, "auto"))
+                    .auto
+                else
+                    return null;
             } else return null;
         }
         return o;
@@ -142,7 +155,7 @@ const Meter = struct {
 };
 
 fn usage() noreturn {
-    std.debug.print("usage: raymarch [--frames=N] [--fps=N] [--caps=SPEC] [--mode=NAME]\n", .{});
+    std.debug.print("usage: raymarch [--frames=N] [--fps=N] [--caps=SPEC] [--mode=NAME] [--color=auto|truecolor|256]\n", .{});
     std.process.exit(2);
 }
 
@@ -178,6 +191,13 @@ pub fn main(init: std.process.Init) !void {
 
     var caps = farewell.caps.resolve(capsEnv(init.environ_map), .{});
     if (opts.caps) |spec| farewell.caps.applySpec(&caps, spec) catch return usage();
+
+    const use_palette = switch (opts.colour) {
+        .indexed256 => true,
+        .truecolor => false,
+        .auto => !caps.terminal.rgb,
+    };
+    const quantised = farewell.quant.Fixed{ .table = .xterm256 };
 
     var presenter = try farewell.Presenter.init(gpa, host.refreshSize(), caps, opts.mode);
     errdefer presenter.deinit();
@@ -239,7 +259,10 @@ pub fn main(init: std.process.Init) !void {
         if (!paused) scene.t += @as(f32, @floatFromInt(frame_ns)) / @as(f32, std.time.ns_per_s) * 0.7;
 
         const t0 = now(io);
-        const bytes = try presenter.drawDiff(farewell.sampler(&scene), .{});
+        const bytes = if (use_palette)
+            try presenter.drawDiff(farewell.sampler(&scene), .{&quantised})
+        else
+            try presenter.drawDiff(farewell.sampler(&scene), .{});
         const t1 = now(io);
         if (bytes.len > 0) try host.write(bytes);
         const t2 = now(io);
@@ -283,7 +306,7 @@ pub fn main(init: std.process.Init) !void {
     const cells: f64 = @as(f64, @floatFromInt(size.cols)) * @as(f64, @floatFromInt(size.rows));
 
     var description: [512]u8 = undefined;
-    std.debug.print("{s}frames {d}  {d:.1} fps  render {d:.2} ms  write {d:.2} ms  {d:.0} bytes/frame  {d:.1} bytes/cell  mode {s}  {d}x{d}  late {d}  rate {d}\n", .{
+    std.debug.print("{s}frames {d}  {d:.1} fps  render {d:.2} ms  write {d:.2} ms  {d:.0} bytes/frame  {d:.1} bytes/cell  mode {s}  {d}x{d}  late {d}  rate {d}  ink {s}\n", .{
         farewell.caps.describe(caps, &description),
         meter.frames,
         frames / (elapsed / @as(f64, std.time.ns_per_s)),
@@ -296,5 +319,6 @@ pub fn main(init: std.process.Init) !void {
         size.rows,
         meter.late,
         rate,
+        if (use_palette) "256" else "truecolour",
     });
 }

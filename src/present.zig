@@ -4,6 +4,7 @@ const std = @import("std");
 const types = @import("types.zig");
 const caps_mod = @import("caps.zig");
 const post_mod = @import("post.zig");
+const quant = @import("quant.zig");
 const blit = @import("blit.zig");
 const ansi = @import("ansi.zig");
 const source = @import("source.zig");
@@ -94,7 +95,9 @@ pub const Presenter = struct {
         comptime post_mod.check(@TypeOf(post_effects));
         const offset = self.head();
         self.renderInto(src, post_effects);
-        const stats = try ansi.emit(&self.grid, self.payload(offset), .{});
+        const stats = try ansi.emit(&self.grid, self.payload(offset), .{
+            .palette = paletteOf(post_effects),
+        });
         std.mem.swap(Grid, &self.grid, &self.prev);
         self.prev_valid = true;
         return self.assemble(stats, offset);
@@ -110,14 +113,25 @@ pub const Presenter = struct {
         const offset = self.head();
         self.renderInto(src, post_effects);
         const o: ansi.Options = if (self.prev_valid)
-            .{ .redraw = .row_skip, .prev = &self.prev }
+            .{ .redraw = .row_skip, .prev = &self.prev, .palette = paletteOf(post_effects) }
         else
-            .{};
+            .{ .palette = paletteOf(post_effects) };
         const stats = try ansi.emit(&self.grid, self.payload(offset), o);
         std.mem.swap(Grid, &self.grid, &self.prev);
         self.prev_valid = true;
         if (stats.rows == 0) return self.tint[0..0];
         return self.assemble(stats, offset);
+    }
+
+    /// The palette the effects say their colours belong to, if any.
+    fn paletteOf(post_effects: anytype) ?quant.Palette {
+        var found: ?quant.Palette = null;
+        inline for (post_effects) |e| {
+            if (comptime post_mod.hasPalette(@TypeOf(e))) {
+                if (e.palette()) |p| found = p;
+            }
+        }
+        return found;
     }
 
     /// Cells first (through the effects that declare `cell`), then the whole
@@ -251,6 +265,17 @@ test "a cell effect reaches the wire" {
     var recolour = Recolour{ .fg = .{ .r = 200, .g = 0, .b = 0 } };
     const bytes = try p.draw(source.sampler(&solid), .{&recolour});
     try std.testing.expect(std.mem.find(u8, bytes, "38;2;200;0;0") != null);
+}
+
+test "a quantising effect tells the encoder to write slots" {
+    var solid = Solid{ .color = .{ .r = 255, .g = 0, .b = 0 } };
+    var p = try Presenter.init(std.testing.allocator, .{ .cols = 2, .rows = 1 }, capsWithSync(false), .half);
+    defer p.deinit();
+
+    const q = quant.Fixed{ .table = .xterm256 };
+    const bytes = try p.draw(source.sampler(&solid), .{&q});
+    try std.testing.expect(std.mem.find(u8, bytes, ";5;") != null);
+    try std.testing.expect(std.mem.find(u8, bytes, ";2;") == null);
 }
 
 test "a grid effect runs before the diff, and sees the screen" {

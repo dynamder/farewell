@@ -30,16 +30,21 @@ pub fn rgb(p: Palette, idx: u8) RGB {
     };
 }
 
-/// Snaps every cell colour to the palette. Declares `cell`, so it runs while
-/// cells are produced and costs no extra pass over the grid.
+/// Snaps every cell colour to a table. Declares `cell`, so it runs while cells
+/// are produced and costs no extra pass over the grid.
 pub const Fixed = struct {
-    palette: Palette,
+    table: Palette,
 
-    pub fn cell(self: *Fixed, c: types.Cell, _: u16, _: u16) types.Cell {
+    pub fn cell(self: *const Fixed, c: types.Cell, _: u16, _: u16) types.Cell {
         var out = c;
-        out.fg = rgb(self.palette, nearest(self.palette, c.fg));
-        out.bg = rgb(self.palette, nearest(self.palette, c.bg));
+        out.fg = rgb(self.table, nearest(self.table, c.fg));
+        out.bg = rgb(self.table, nearest(self.table, c.bg));
         return out;
+    }
+
+    /// Tells the encoder these colours are slots in `table`.
+    pub fn palette(self: *const Fixed) ?Palette {
+        return self.table;
     }
 };
 
@@ -168,7 +173,7 @@ test "every cube and grey slot maps back to itself" {
 }
 
 test "snapping a cell keeps its glyph and lands on palette colours" {
-    var f = Fixed{ .palette = .xterm256 };
+    const f = Fixed{ .table = .xterm256 };
     const out = f.cell(.{ .cp = 'x', .fg = .{ .r = 250, .g = 10, .b = 10 }, .bg = .{ .r = 0, .g = 0, .b = 255 } }, 3, 4);
 
     try std.testing.expectEqual(@as(u21, 'x'), out.cp);
@@ -179,7 +184,7 @@ test "snapping a cell keeps its glyph and lands on palette colours" {
 }
 
 test "snapping twice changes nothing" {
-    var f = Fixed{ .palette = .xterm256 };
+    const f = Fixed{ .table = .xterm256 };
     const once = f.cell(.{ .fg = .{ .r = 17, .g = 200, .b = 44 }, .bg = .{ .r = 250, .g = 250, .b = 3 } }, 0, 0);
     const twice = f.cell(once, 0, 0);
     try std.testing.expect(twice.fg.eql(once.fg));
