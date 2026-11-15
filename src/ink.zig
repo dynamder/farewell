@@ -123,9 +123,15 @@ fn silhouette(block: *const [64]RGB, pair: Pair) u64 {
 
 /// The two colours this glyph would use, and what is left of the block once it
 /// is drawn: the mean of the covered samples as fg, the mean of the rest as bg.
+///
+/// The error comes out of the sums rather than a second pass over the samples:
+/// `sum |p - c|^2 = sum |p|^2 - 2 (fg.S1 + bg.S0) + n1 |fg|^2 + n0 |bg|^2`, and
+/// everything in it is already accumulated. Exact for any two colours, not just
+/// the means, so it equals the sample-by-sample sum to the last unit.
 fn score(block: *const [64]RGB, g: Glyph) Scored {
     var sum: [2][3]u32 = .{ .{ 0, 0, 0 }, .{ 0, 0, 0 } };
     var count: [2]u32 = @splat(0);
+    var energy: u32 = 0;
 
     for (block, 0..) |p, i| {
         const side: usize = @intFromBool(bitAt(g.mask, i) == 1);
@@ -133,6 +139,7 @@ fn score(block: *const [64]RGB, g: Glyph) Scored {
         sum[side][0] += p.r;
         sum[side][1] += p.g;
         sum[side][2] += p.b;
+        energy += @as(u32, p.r) * p.r + @as(u32, p.g) * p.g + @as(u32, p.b) * p.b;
     }
 
     // A blank glyph has no foreground and a solid one no background: both
@@ -140,11 +147,19 @@ fn score(block: *const [64]RGB, g: Glyph) Scored {
     const fg = if (count[1] != 0) mean(sum[1], count[1]) else mean(sum[0], count[0]);
     const bg = if (count[0] != 0) mean(sum[0], count[0]) else fg;
 
-    var err: u32 = 0;
-    for (block, 0..) |p, i| {
-        err += quant.distance(p, if (bitAt(g.mask, i) == 1) fg else bg);
-    }
-    return .{ .err = err, .fg = fg, .bg = bg };
+    const err = @as(i64, energy) -
+        2 * (@as(i64, dot(sum[1], fg)) + @as(i64, dot(sum[0], bg))) +
+        @as(i64, count[1]) * dot2(fg) + @as(i64, count[0]) * dot2(bg);
+
+    return .{ .err = @intCast(err), .fg = fg, .bg = bg };
+}
+
+fn dot(sum: [3]u32, c: RGB) u32 {
+    return sum[0] * c.r + sum[1] * c.g + sum[2] * c.b;
+}
+
+fn dot2(c: RGB) u32 {
+    return @as(u32, c.r) * c.r + @as(u32, c.g) * c.g + @as(u32, c.b) * c.b;
 }
 
 fn mean(sum: [3]u32, n: u32) RGB {
@@ -344,6 +359,25 @@ test "scoring more candidates never makes the answer worse" {
         const a = score(&block, .{ .cp = cheap.cp, .mask = chosenMask(cheap) }).err;
         const b = score(&block, .{ .cp = thorough.cp, .mask = chosenMask(thorough) }).err;
         try std.testing.expect(b <= a);
+    }
+}
+
+test "the error from the sums matches the error from the samples" {
+    var prng = std.Random.DefaultPrng.init(0x5ca1e);
+    const rand = prng.random();
+
+    for (0..8) |_| {
+        var block: [64]RGB = undefined;
+        for (&block) |*p| p.* = .{ .r = rand.int(u8), .g = rand.int(u8), .b = rand.int(u8) };
+
+        for (table) |g| {
+            const s = score(&block, g);
+            var naive: u32 = 0;
+            for (block, 0..) |p, i| {
+                naive += quant.distance(p, if (bitAt(g.mask, i) == 1) s.fg else s.bg);
+            }
+            try std.testing.expectEqual(naive, s.err);
+        }
     }
 }
 
