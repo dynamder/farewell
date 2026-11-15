@@ -78,33 +78,38 @@ pub const Presenter = struct {
         self.size = size;
     }
 
-    /// Full redraw. The returned slice is valid until the next call.
+    /// Full redraw. The returned slice is valid until the next draw, resize or
+    /// deinit.
     pub fn draw(self: *Presenter, src: anytype) ![]const u8 {
+        const offset = self.head();
         blit.renderAny(src, self.mode, &self.grid, self.options);
-        const stats = try ansi.emit(&self.grid, self.payload(), .{});
-        return self.assemble(stats);
+        const stats = try ansi.emit(&self.grid, self.payload(offset), .{});
+        return self.assemble(stats, offset);
     }
 
     /// Row-level diff against the previous frame. An unchanged frame yields an
-    /// empty slice, so the caller can skip the write entirely.
+    /// empty slice, so the caller can skip the write entirely. The returned
+    /// slice is valid until the next draw, resize or deinit.
     pub fn drawDiff(self: *Presenter, src: anytype) ![]const u8 {
+        const offset = self.head();
         blit.renderAny(src, self.mode, &self.grid, self.options);
-        const stats = try ansi.emit(&self.grid, self.payload(), .{ .redraw = .row_skip, .prev = &self.prev });
+        const stats = try ansi.emit(&self.grid, self.payload(offset), .{ .redraw = .row_skip, .prev = &self.prev });
         std.mem.swap(Grid, &self.grid, &self.prev);
         if (stats.rows == 0) return self.tint[0..0];
-        return self.assemble(stats);
-    }
-
-    fn payload(self: *Presenter) []u8 {
-        return self.tint[self.head()..];
+        return self.assemble(stats, offset);
     }
 
     fn head(self: *Presenter) usize {
         return if (self.caps.terminal.sync_output) ansi.sync_on.len else 0;
     }
 
-    fn assemble(self: *Presenter, stats: ansi.Stats) []const u8 {
-        const offset = self.head();
+    fn payload(self: *Presenter, offset: usize) []u8 {
+        return self.tint[offset..];
+    }
+
+    /// Wraps the `stats.bytes` body already at `self.tint[offset..]` in sync
+    /// markers, in place. `offset` must be the value `payload` was called with.
+    fn assemble(self: *Presenter, stats: ansi.Stats, offset: usize) []const u8 {
         if (offset == 0) return self.tint[0..stats.bytes];
         @memcpy(self.tint[0..offset], ansi.sync_on);
         const tail = offset + stats.bytes;
@@ -134,7 +139,7 @@ test "every cell at worst case still fits the buffer" {
     for (p.grid.cells) |*c| {
         c.* = .{ .cp = 0x1F600, .fg = .{ .r = 255, .g = 255, .b = 255 }, .bg = .{ .r = 1, .g = 2, .b = 3 } };
     }
-    _ = try ansi.emit(&p.grid, p.payload(), .{});
+    _ = try ansi.emit(&p.grid, p.payload(p.head()), .{});
 }
 
 test "sync markers wrap the frame only when supported" {
