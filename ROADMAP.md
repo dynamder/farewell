@@ -12,7 +12,7 @@
 | M5 | `pacer`：按帧预算降帧，到底后降档 | done | 合成样本覆盖滞回与回升；400×150 的 braille 在 pty 上降到 15 fps 后降为 quad |
 | M6a | 后处理阶段 + 量化：xterm256 | done | fuzz 对拍最近色；120×36 帧字节 19.6 KB → 9.4 KB |
 | M6b | 抖动：有序（Bayer） | done | 256 色灰阶的 tile 均值误差 8 级 → 0.5 级（`bayer4`）；网点与字节的代价记在 README |
-| M6c | 符号墨量匹配（chafa） | later | `ascii` 档出现抗锯齿般的中间调 |
+| M6c | 符号墨量匹配 | done | 平坦块不长网点；两色块能还原成同一字形；渐变上字节与 `half` 相同 |
 | M6d | 时间抖动 | later | 与 `row_skip` diff 一起重新设计 |
 
 ## 待定
@@ -35,3 +35,4 @@
 - [终端图形栈调研](docs/architecture-survey.md)：前人做了什么，哪些该统一
 - [库设计](docs/library-design.md)：边界、模块、技法来源
 - [实测能力](docs/measured-caps.md)：三台终端上的 blitter 与带宽实测
+- [符号墨量匹配](docs/ink-matching.md)：8×8 剪影匹配、字形表从哪来、代价与许可
