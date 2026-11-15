@@ -18,8 +18,12 @@ jobs:
 
       # Catches a table that drifted from its generator: the recorded script
       # hash and parameters must still match. Needs no font and no Zig.
-      - name: glyph table matches its generator
-        run: python3 tools/inkmap.py --check --out src/ink-ascii.zig --cell 10x20 --size 16
+      - name: glyph tables match their generator
+        run: |
+          for grid in 8x8 8x16; do
+            python3 tools/inkmap.py --check --grid "$grid" \
+              --out "src/ink-ascii-$grid.zig" --cell 10x20 --size 16
+          done
 
   build:
     strategy:

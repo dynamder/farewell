@@ -50,7 +50,8 @@ pub fn pack(comptime mode: Mode, s: []const RGB, o: Options) Cell {
         .quad => packSplit(s, 4, o, true),
         .sextant => packSplit(s, 6, o, false),
         .braille => packBraille(s, o),
-        .ink => ink.choose(s[0..64], o.ink),
+        .ink => ink.choose(.x8, s[0..64], o.ink),
+        .ink16 => ink.choose(.tall, s[0..128], o.ink),
     };
 }
 

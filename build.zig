@@ -27,26 +27,33 @@ pub fn build(b: *std.Build) void {
     b.step("run", "Run the raymarch demo").dependOn(&b.addRunArtifact(demo).step);
     b.step("fmt", "Format sources").dependOn(&b.addFmt(.{ .paths = &.{ b.path("build.zig"), b.path("src"), b.path("demo") } }).step);
 
-    // The glyph table is generated from a font, which needs a rasteriser: that is
-    // the one thing Zig's standard library does not have. Python is a tool-time
-    // dependency only; the generated file is committed and `zig build` never
-    // runs this step.
+    // The glyph tables are generated from a font, which needs a rasteriser: that
+    // is the one thing Zig's standard library does not have. Python is a
+    // tool-time dependency only; the generated files are committed and
+    // `zig build` never runs these steps.
     const python = b.option([]const u8, "python", "interpreter for tools/inkmap.py") orelse "python";
-    const table_args = [_][]const u8{ "--out", "src/ink-ascii.zig", "--cell", "10x20", "--size", "16" };
+    const font = b.option([]const u8, "font", "TTF the glyph masks are measured from");
 
-    const inkmap = b.addSystemCommand(&.{python});
-    inkmap.addFileArg(b.path("tools/inkmap.py"));
-    inkmap.addArgs(&table_args);
-    if (b.option([]const u8, "font", "TTF the glyph masks are measured from")) |font| {
-        inkmap.addArgs(&.{ "--font", font });
+    const inkmap = b.step("inkmap", "Regenerate the measured glyph tables from a font");
+    const inkmap_check = b.step("inkmap-check", "Verify the glyph tables match tools/inkmap.py");
+
+    for ([_][]const u8{ "8x8", "8x16" }) |grid| {
+        const out = b.fmt("src/ink-ascii-{s}.zig", .{grid});
+        const args = [_][]const u8{ "--grid", grid, "--out", out, "--cell", "10x20", "--size", "16" };
+
+        const gen = b.addSystemCommand(&.{python});
+        gen.addFileArg(b.path("tools/inkmap.py"));
+        gen.addArgs(&args);
+        if (font) |path| gen.addArgs(&.{ "--font", path });
+
+        const gen_fmt = b.addFmt(.{ .paths = &.{b.path(out)} });
+        gen_fmt.step.dependOn(&gen.step);
+        inkmap.dependOn(&gen_fmt.step);
+
+        const check = b.addSystemCommand(&.{python});
+        check.addFileArg(b.path("tools/inkmap.py"));
+        check.addArgs(&args);
+        check.addArg("--check");
+        inkmap_check.dependOn(&check.step);
     }
-    const inkmap_fmt = b.addFmt(.{ .paths = &.{b.path("src/ink-ascii.zig")} });
-    inkmap_fmt.step.dependOn(&inkmap.step);
-    b.step("inkmap", "Regenerate src/ink-ascii.zig from a font").dependOn(&inkmap_fmt.step);
-
-    const inkmap_check = b.addSystemCommand(&.{python});
-    inkmap_check.addFileArg(b.path("tools/inkmap.py"));
-    inkmap_check.addArgs(&table_args);
-    inkmap_check.addArg("--check");
-    b.step("inkmap-check", "Verify the glyph table matches tools/inkmap.py").dependOn(&inkmap_check.step);
 }

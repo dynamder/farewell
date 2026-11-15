@@ -73,13 +73,13 @@ pub const Cell = struct {
 };
 
 /// Samples taken per cell, horizontally and vertically. The upper bound is the
-/// 8x8 grid symbol matching needs; everything else is far below it.
+/// 8x16 grid symbol matching needs; everything else is far below it.
 pub const Dims = struct {
-    nx: u4,
-    ny: u4,
+    nx: u5,
+    ny: u5,
 
-    pub fn samples(d: Dims) u7 {
-        return @as(u7, d.nx) * @as(u7, d.ny);
+    pub fn samples(d: Dims) u8 {
+        return @as(u8, d.nx) * @as(u8, d.ny);
     }
 };
 
@@ -97,8 +97,11 @@ pub const Mode = enum {
     /// 2x4 — braille dots. Denser than sextant and far better supported.
     braille,
     /// 8x8 — symbol ink matching: one glyph from a measured table plus two
-    /// colours, chosen per cell. The most expensive rung.
+    /// colours, chosen per cell.
     ink,
+    /// 8x16 — the same matcher on a grid whose sub-cells are square in a 1:2
+    /// terminal cell. Twice the samples, twice the vertical detail.
+    ink16,
 
     pub fn density(m: Mode) Dims {
         return switch (m) {
@@ -109,6 +112,7 @@ pub const Mode = enum {
             .sextant => .{ .nx = 2, .ny = 3 },
             .braille => .{ .nx = 2, .ny = 4 },
             .ink => .{ .nx = 8, .ny = 8 },
+            .ink16 => .{ .nx = 8, .ny = 16 },
         };
     }
 

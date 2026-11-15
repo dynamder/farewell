@@ -246,7 +246,7 @@ pub fn select(caps: Caps, want: Mode) Mode {
         .sextant => if (caps.font.sextant) .sextant else select(caps, .braille),
         .braille => if (caps.font.braille) .braille else select(caps, .half),
         .quad => if (caps.font.quadrant) .quad else select(caps, .half),
-        .ink => if (caps.font.quadrant) .ink else select(caps, .half),
+        .ink, .ink16 => if (caps.font.quadrant) want else select(caps, .half),
         .half, .bars, .ascii => want,
     };
 }
