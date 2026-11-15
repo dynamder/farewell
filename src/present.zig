@@ -78,12 +78,13 @@ pub const Presenter = struct {
         self.size = size;
     }
 
-    /// Full redraw. The returned slice is valid until the next draw, resize or
-    /// deinit.
+    /// Full redraw; also re-bases the rows `drawDiff` compares against. The
+    /// returned slice is valid until the next draw, resize or deinit.
     pub fn draw(self: *Presenter, src: anytype) ![]const u8 {
         const offset = self.head();
         blit.renderAny(src, self.mode, &self.grid, self.options);
         const stats = try ansi.emit(&self.grid, self.payload(offset), .{});
+        std.mem.swap(Grid, &self.grid, &self.prev);
         return self.assemble(stats, offset);
     }
 
@@ -172,6 +173,22 @@ test "unchanged frame produces no bytes" {
     try std.testing.expect(first.len > 0);
     const second = try p.drawDiff(source.sampler(&solid));
     try std.testing.expectEqual(@as(usize, 0), second.len);
+}
+
+test "a full draw re-bases the diff" {
+    var a = Solid{ .color = .{ .r = 10, .g = 20, .b = 30 } };
+    var b = Solid{ .color = .{ .r = 200, .g = 100, .b = 50 } };
+    var p = try Presenter.init(std.testing.allocator, .{ .cols = 6, .rows = 3 }, capsWithSync(false), .half);
+    defer p.deinit();
+
+    _ = try p.drawDiff(source.sampler(&a));
+    _ = try p.draw(source.sampler(&b));
+
+    const repaint = try p.drawDiff(source.sampler(&a));
+    try std.testing.expect(repaint.len > 0);
+
+    const unchanged = try p.drawDiff(source.sampler(&a));
+    try std.testing.expectEqual(@as(usize, 0), unchanged.len);
 }
 
 test "resize keeps the presenter usable" {
